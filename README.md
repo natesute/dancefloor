@@ -2,16 +2,37 @@
 
 Dancing GIFs that float over your Mac and dance to the beat of whatever is playing.
 
+![Dancefloor icon](Resources/AppIcon.png)
+
+A menu bar app. It listens to your Mac's audio output (Spotify, YouTube, Apple Music, anything),
+works out the tempo and where the bars start, and times each GIF's loop so the dancers move on
+the beat. Audio is analysed live on your Mac and is never recorded, saved or sent anywhere.
+
+## Requirements
+
+- macOS 15 or later (system audio capture uses Core Audio process taps)
+- Xcode 16 or later, for the Swift 6 toolchain
+- A free GIPHY API key for searching GIFs (optional: without one, Dancefloor uses GIFs from
+  `~/Pictures/Dancefloor`)
+
 ## Install
 
 ```bash
+git clone https://github.com/natesute/dancefloor.git
+cd dancefloor
 Scripts/install.sh
 ```
 
-Builds, copies to `/Applications/Dancefloor.app` and launches it. Turn on **Open at login** in ⚙.
+This builds the app, copies it to `/Applications/Dancefloor.app` and launches it.
 
-Needs macOS 15+. On first launch, allow audio capture so the dancers can hear the music.
-Dancefloor lives in the menu bar (🕺, which shows the BPM once it locks on).
+1. When macOS asks, allow Dancefloor to capture audio. If you miss the prompt, allow it under
+   System Settings → Privacy & Security → Audio Recording.
+2. Get a GIPHY key: create an app at [developers.giphy.com](https://developers.giphy.com/),
+   choose **API** (not SDK), and paste the key into Dancefloor's picker.
+3. Optional: turn on **Open at login** in ⚙.
+
+The build script signs with your Apple Development certificate if you have one. Without one it
+signs ad hoc, which works but makes macOS ask for audio permission again after each rebuild.
 
 ## Using it
 
@@ -48,3 +69,11 @@ swift test
 swift run -c release bpmcheck path/to/song.mp3
 swift run -c release bpmcheck --click 128
 ```
+
+## Credits
+
+GIF search is powered by [GIPHY](https://giphy.com). GIFs belong to their creators.
+
+## License
+
+[MIT](LICENSE)

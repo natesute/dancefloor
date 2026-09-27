@@ -417,6 +417,7 @@ private struct SettingsPane: View {
             Button("Open my GIF folder") { model.controller?.openFolder() }
             Button("Remove all dancers") { model.controller?.removeAllDancers() }
             Button("Quit Dancefloor") { NSApp.terminate(nil) }
+            Text("GIF search powered by GIPHY").font(.system(size: 10)).foregroundStyle(.tertiary)
             if let message = model.message {
                 Text(message).font(.system(size: 11)).foregroundStyle(.red)
             }
