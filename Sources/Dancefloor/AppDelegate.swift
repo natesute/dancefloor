@@ -193,7 +193,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Dancer
 
     private func restoreDancers() {
         guard let data = UserDefaults.standard.data(forKey: "dancers"),
-              let saved = try? JSONDecoder().decode([SavedDancer].self, from: data) else { return }
+              let saved = try? JSONDecoder().decode([SavedDancer].self, from: data), !saved.isEmpty else {
+            // Nothing saved: start with one dancer so there's something to see.
+            return addRandomDancer()
+        }
         Task { @MainActor in
             for s in saved {
                 guard let gif = try? await library.load(s.source, title: s.title) else { continue }

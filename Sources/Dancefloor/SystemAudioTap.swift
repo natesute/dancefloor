@@ -1,6 +1,9 @@
 import AudioToolbox
 import CoreAudio
 import Foundation
+import os
+
+private let log = Logger(subsystem: "com.natesute.dancefloor", category: "audio")
 
 /// Captures everything the Mac is playing using a Core Audio process tap (macOS 14.2+).
 /// Nothing is recorded or stored; samples go straight to the callback.
@@ -20,6 +23,7 @@ final class SystemAudioTap {
     private var procID: AudioDeviceIOProcID?
     private var sampleRate: Double = 48_000
     private var mono: [Float] = []
+    private var loggedFormat = false
     private let queue = DispatchQueue(label: "dancefloor.audio-tap", qos: .userInteractive)
 
     var isRunning: Bool { procID != nil }
@@ -41,6 +45,7 @@ final class SystemAudioTap {
                 mElement: kAudioObjectPropertyElementMain)
             try check("Reading the tap format", AudioObjectGetPropertyData(tapID, &address, 0, nil, &size, &format))
             sampleRate = format.mSampleRate
+            log.notice("Tap format reports \(format.mSampleRate) Hz")
 
             let outputUID = try Self.defaultOutputDeviceUID()
             let aggregate: [String: Any] = [
@@ -58,6 +63,15 @@ final class SystemAudioTap {
             ]
             try check("Creating the aggregate device",
                       AudioHardwareCreateAggregateDevice(aggregate as CFDictionary, &aggregateID))
+
+            // The tap's own format can claim 48 kHz while the device clock runs at 44.1 kHz;
+            // the aggregate device's nominal rate is what samples actually arrive at.
+            var nominalRate: Float64 = 0
+            size = UInt32(MemoryLayout<Float64>.size)
+            address.mSelector = kAudioDevicePropertyNominalSampleRate
+            if AudioObjectGetPropertyData(aggregateID, &address, 0, nil, &size, &nominalRate) == noErr, nominalRate > 0 {
+                sampleRate = nominalRate
+            }
 
             try check("Creating the IO proc", AudioDeviceCreateIOProcIDWithBlock(&procID, aggregateID, queue) {
                 [weak self] _, input, inputTime, _, _ in
@@ -89,6 +103,10 @@ final class SystemAudioTap {
     private func handle(_ input: UnsafePointer<AudioBufferList>, time: UnsafePointer<AudioTimeStamp>) {
         let buffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input))
         guard let first = buffers.first, first.mData != nil else { return }
+        if !loggedFormat {
+            loggedFormat = true
+            log.notice("Tap delivering \(buffers.count) buffer(s), \(first.mNumberChannels) ch, \(self.sampleRate) Hz")
+        }
 
         // Interleaved (one buffer, N channels) or planar (N buffers, one channel each).
         let interleavedChannels = buffers.count == 1 ? max(1, Int(first.mNumberChannels)) : 1
