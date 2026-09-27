@@ -7,6 +7,7 @@ protocol DancefloorController: AnyObject {
     func randomiseAll()
     func removeAllDancers()
     func openFolder()
+    func closePicker()
     var syncOffset: Double { get set }
 }
 
@@ -27,7 +28,8 @@ final class PickerModel: ObservableObject {
     @Published var addingTerm = false
     @Published var newTerm = ""
     @Published var keyDraft = ""
-    @Published var status = ""
+    /// Only set when audio capture has failed; otherwise the popover shows no status.
+    @Published var audioProblem: String?
     @Published private(set) var terms: [String] = []
     @Published private(set) var hasKey = false
     @Published var mode: SourceMode = .both {
@@ -77,7 +79,6 @@ final class PickerModel: ObservableObject {
         case .folder:
             isLoading = false
             items = library.localItems()
-            if items.isEmpty { message = "Drop GIFs into your folder, or tap ♥ on a dancer to keep it." }
         case .term(let term):
             isLoading = true
             items = []
@@ -98,6 +99,7 @@ final class PickerModel: ObservableObject {
     func add(_ item: PickerItem) {
         guard addingID == nil else { return }
         addingID = item.id
+        controller?.closePicker()
         Task {
             do { try await controller?.addDancer(from: item) } catch { message = error.localizedDescription }
             addingID = nil
@@ -144,29 +146,35 @@ struct PickerView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if let problem = model.audioProblem {
+                Label(problem, systemImage: "speaker.slash").font(.system(size: 11)).foregroundStyle(.red)
+            }
             if model.showSettings {
                 SettingsPane(model: model)
             } else {
                 BrowsePane(model: model)
             }
-            Divider()
-            HStack(spacing: 6) {
-                Image(systemName: "music.note").foregroundStyle(.secondary)
-                Text(model.status).foregroundStyle(.secondary).lineLimit(1)
-                Spacer()
-                Button { model.controller?.randomiseAll() } label: { Image(systemName: "shuffle") }
-                    .help("Randomise all dancers")
-                Button { model.showSettings.toggle() } label: {
-                    Image(systemName: model.showSettings ? "square.grid.3x3" : "gearshape")
-                }
-                .help(model.showSettings ? "Back to dancers" : "Settings")
-            }
-            .font(.system(size: 12))
-            .buttonStyle(.borderless)
         }
         .padding(12)
         .frame(width: Self.size.width, height: Self.size.height)
     }
+}
+
+/// Shuffle and settings, beside the search field (settings swaps to a back button).
+@MainActor
+private func toolbarButtons(model: PickerModel) -> some View {
+    HStack(spacing: 10) {
+        if !model.showSettings {
+            Button { model.controller?.randomiseAll() } label: { Image(systemName: "shuffle") }
+                .help("Randomise all dancers")
+        }
+        Button { model.showSettings.toggle() } label: {
+            Image(systemName: model.showSettings ? "chevron.backward" : "gearshape")
+        }
+        .help(model.showSettings ? "Back" : "Settings")
+    }
+    .font(.system(size: 13))
+    .buttonStyle(.borderless)
 }
 
 private struct BrowsePane: View {
@@ -175,25 +183,30 @@ private struct BrowsePane: View {
 
     var body: some View {
         if model.hasKey {
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("Search GIPHY", text: $model.query)
-                    .textFieldStyle(.plain)
-                    .onSubmit { model.submitSearch() }
+            HStack(spacing: 8) {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("Search GIPHY", text: $model.query)
+                        .textFieldStyle(.plain)
+                        .onSubmit { model.submitSearch() }
+                }
+                .padding(.horizontal, 8).padding(.vertical, 5)
+                .background(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.15)))
+                toolbarButtons(model: model)
             }
-            .padding(.horizontal, 8).padding(.vertical, 5)
-            .background(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.15)))
             chips
         } else {
-            HStack(spacing: 6) {
-                Image(systemName: "key").foregroundStyle(.secondary)
-                TextField("Paste GIPHY API key", text: $model.keyDraft)
-                    .textFieldStyle(.plain)
-                    .onSubmit { model.saveKey() }
+            HStack(spacing: 8) {
+                HStack(spacing: 6) {
+                    Image(systemName: "key").foregroundStyle(.secondary)
+                    TextField("Paste GIPHY API key", text: $model.keyDraft)
+                        .textFieldStyle(.plain)
+                        .onSubmit { model.saveKey() }
+                }
+                .padding(.horizontal, 8).padding(.vertical, 5)
+                .background(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.15)))
+                toolbarButtons(model: model)
             }
-            .padding(.horizontal, 8).padding(.vertical, 5)
-            .background(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.15)))
-            Text("My folder").font(.system(size: 11)).foregroundStyle(.secondary)
         }
 
         ScrollView {
@@ -269,7 +282,11 @@ private struct SettingsPane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Settings").font(.headline)
+            HStack {
+                Text("Settings").font(.headline)
+                Spacer()
+                toolbarButtons(model: model)
+            }
 
             row("Dancers from") {
                 Picker("", selection: $model.mode) {

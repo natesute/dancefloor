@@ -143,17 +143,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, Dan
     private func updateStatus() {
         let locked = clock.isLocked(at: CACurrentMediaTime())
         statusItem?.button?.title = locked ? "🕺 \(Int(clock.bpm.rounded()))" : "🕺"
-        let music: String
-        if audioError != nil {
-            music = "Can't hear audio"
-        } else if locked {
-            music = "\(Int(clock.bpm.rounded())) BPM"
-        } else {
-            music = "Waiting for music"
-        }
-        let count = dancers.count == 1 ? "1 dancer" : "\(dancers.count) dancers"
-        let status = "\(music) · \(count)"
-        if picker.status != status { picker.status = status }
+        let problem = audioError == nil ? nil : "Can't hear your Mac's audio. Allow Dancefloor under Privacy → Audio Recording."
+        if picker.audioProblem != problem { picker.audioProblem = problem }
     }
 
     @objc private func tick() {
@@ -203,6 +194,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, Dan
     }
 
     func openFolder() { NSWorkspace.shared.open(library.folder) }
+
+    func closePicker() { popover.performClose(nil) }
 
     // MARK: - Dancers
 
