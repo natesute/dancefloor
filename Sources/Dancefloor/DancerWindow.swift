@@ -17,7 +17,8 @@ protocol DancerWindowDelegate: AnyObject {
 @MainActor
 final class DancerWindow: NSPanel {
     private(set) var gif: LoadedGif
-    var beatsPerLoop: Int
+    /// Doublings of speed on top of the automatic fit: +1 twice as fast, -1 half as fast.
+    var speedBias: Int
     /// Offset into the loop, in beats (half-beat steps).
     var beatShift: Double
     weak var dancerDelegate: DancerWindowDelegate?
@@ -25,13 +26,17 @@ final class DancerWindow: NSPanel {
     private let dancerView = DancerView()
     private var shownFrame = -1
     /// Temporarily shown while hovering an alternative in the swap strip.
-    private var preview: (gif: LoadedGif, beats: Int, shift: Double)?
+    private var preview: (gif: LoadedGif, bias: Int, shift: Double)?
     private var shown: LoadedGif { preview?.gif ?? gif }
+    /// Automatic beats-per-loop for the committed GIF and the preview, kept between frames
+    /// so the fit only changes when the tempo clearly calls for it.
+    private var fittedBeats: Double?
+    private var previewFittedBeats: Double?
     var isLoading = false { didSet { dancerView.alphaValue = isLoading ? 0.5 : 1 } }
 
-    init(gif: LoadedGif, beatsPerLoop: Int, beatShift: Double, height: CGFloat, center: NSPoint) {
+    init(gif: LoadedGif, speedBias: Int, beatShift: Double, height: CGFloat, center: NSPoint) {
         self.gif = gif
-        self.beatsPerLoop = beatsPerLoop
+        self.speedBias = speedBias
         self.beatShift = beatShift
         super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         isOpaque = false
@@ -53,34 +58,42 @@ final class DancerWindow: NSPanel {
     var dancerHeight: CGFloat { frame.height }
     var center: NSPoint { NSPoint(x: frame.midX, y: frame.midY) }
 
-    func setPreview(_ previewGif: LoadedGif?, beatsPerLoop: Int = 4, beatShift: Double = 0) {
-        preview = previewGif.map { ($0, beatsPerLoop, beatShift) }
+    func setPreview(_ previewGif: LoadedGif?, speedBias: Int = 0, beatShift: Double = 0) {
+        preview = previewGif.map { ($0, speedBias, beatShift) }
+        previewFittedBeats = nil
         shownFrame = -1
         setFrame(Self.frame(for: shown.animation, height: frame.height, center: center), display: true)
     }
 
-    func replaceGif(_ newGif: LoadedGif, beatsPerLoop: Int, beatShift: Double) {
+    func replaceGif(_ newGif: LoadedGif, speedBias: Int, beatShift: Double) {
         preview = nil
         gif = newGif
-        self.beatsPerLoop = beatsPerLoop
+        fittedBeats = nil
+        self.speedBias = speedBias
         self.beatShift = beatShift
         shownFrame = -1
         setFrame(Self.frame(for: newGif.animation, height: frame.height, center: center), display: true)
         showFrame(0)
     }
 
-    /// Called every display refresh. `beat` is nil when there's no music to follow.
-    func tick(beat: Double?, now: Double) {
+    /// Called every display refresh. `beat` and `period` are nil when there's no music to follow.
+    func tick(beat: Double?, period: Double?, now: Double) {
         let anim = shown.animation
-        let beats = preview?.beats ?? beatsPerLoop
-        let shift = preview?.shift ?? beatShift
-        let progress: Double
-        if let beat {
-            progress = (beat - shift) / Double(beats)
-        } else {
-            progress = now / anim.duration
+        guard let beat, let period else {
+            return showFrame(anim.frameIndex(progress: now / anim.duration))
         }
-        showFrame(anim.frameIndex(progress: progress))
+        let beats: Double
+        let shift: Double
+        if let preview {
+            previewFittedBeats = LoopFit.beatsPerLoop(nativeDuration: anim.duration, beatPeriod: period, current: previewFittedBeats)
+            beats = previewFittedBeats! * pow(2, Double(-preview.bias))
+            shift = preview.shift
+        } else {
+            fittedBeats = LoopFit.beatsPerLoop(nativeDuration: anim.duration, beatPeriod: period, current: fittedBeats)
+            beats = fittedBeats! * pow(2, Double(-speedBias))
+            shift = beatShift
+        }
+        showFrame(anim.frameIndex(progress: (beat - shift) / beats))
     }
 
     private func showFrame(_ index: Int) {
@@ -110,18 +123,11 @@ final class DancerWindow: NSPanel {
         menu.addItem(item("Change Dancer", #selector(changeGif)))
         menu.addItem(.separator())
 
-        let beats = NSMenuItem(title: "Beats per Loop", action: nil, keyEquivalent: "")
-        let beatsMenu = NSMenu()
-        for n in [1, 2, 4, 8, 16] {
-            let i = item("\(n)", #selector(setBeats(_:)))
-            i.tag = n
-            i.state = n == beatsPerLoop ? .on : .off
-            beatsMenu.addItem(i)
-        }
-        beats.submenu = beatsMenu
-        menu.addItem(beats)
-        menu.addItem(item("Faster (Halve Loop)", #selector(faster)))
-        menu.addItem(item("Slower (Double Loop)", #selector(slower)))
+        menu.addItem(item("Faster", #selector(faster)))
+        menu.addItem(item("Slower", #selector(slower)))
+        let auto = item("Automatic Speed", #selector(resetSpeed))
+        auto.state = speedBias == 0 ? .on : .off
+        menu.addItem(auto)
         menu.addItem(item("Shift Half a Beat", #selector(shiftHalfBeatAction)))
         menu.addItem(.separator())
         menu.addItem(item("Bigger", #selector(bigger)))
@@ -150,14 +156,14 @@ final class DancerWindow: NSPanel {
     @objc private func remove() { dancerDelegate?.dancerWantsRemoval(self) }
     @objc private func bigger() { resize(by: 1.25); dancerDelegate?.dancerDidMove(self) }
     @objc private func smaller() { resize(by: 0.8); dancerDelegate?.dancerDidMove(self) }
-    func halveSpeed() { beatsPerLoop = min(32, beatsPerLoop * 2); dancerDelegate?.dancerDidChangeTuning(self) }
-    func doubleSpeed() { beatsPerLoop = max(1, beatsPerLoop / 2); dancerDelegate?.dancerDidChangeTuning(self) }
+    func halveSpeed() { speedBias = max(-3, speedBias - 1); dancerDelegate?.dancerDidChangeTuning(self) }
+    func doubleSpeed() { speedBias = min(3, speedBias + 1); dancerDelegate?.dancerDidChangeTuning(self) }
     func shiftHalfBeat() {
-        beatShift = (beatShift + 0.5).truncatingRemainder(dividingBy: Double(beatsPerLoop))
+        beatShift = (beatShift + 0.5).truncatingRemainder(dividingBy: 8)
         dancerDelegate?.dancerDidChangeTuning(self)
     }
 
-    @objc private func setBeats(_ sender: NSMenuItem) { beatsPerLoop = sender.tag; dancerDelegate?.dancerDidChangeTuning(self) }
+    @objc private func resetSpeed() { speedBias = 0; dancerDelegate?.dancerDidChangeTuning(self) }
     @objc private func faster() { doubleSpeed() }
     @objc private func slower() { halveSpeed() }
     @objc private func shiftHalfBeatAction() { shiftHalfBeat() }

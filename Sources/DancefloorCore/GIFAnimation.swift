@@ -55,12 +55,6 @@ public final class GIFAnimation {
         return lo
     }
 
-    /// Best guess at how many beats one loop covers, assuming the GIF was made near 120 BPM.
-    public var guessedBeatsPerLoop: Int {
-        let beats = duration / 0.5
-        return [1, 2, 4, 8, 16].min { abs(log2(Double($0) / beats)) < abs(log2(Double($1) / beats)) } ?? 4
-    }
-
     private static func delay(source: CGImageSource, index: Int) -> Double {
         guard let props = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any],
               let gif = props[kCGImagePropertyGIFDictionary] as? [CFString: Any] else { return 0.1 }

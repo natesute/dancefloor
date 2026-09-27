@@ -216,20 +216,20 @@ final class GifLibrary {
         try gif.data.write(to: url)
         // Carry the tuning over to the saved copy.
         let newKey = GifSource.local(path: url.path).key
-        defaults.set(beatsPerLoop(for: gif), forKey: "beats." + newKey)
+        defaults.set(speedBias(for: gif.source), forKey: "speed." + newKey)
         defaults.set(beatShift(for: gif.source), forKey: "shift." + newKey)
         return url
     }
 
     // MARK: - Per-GIF tuning
 
-    func beatsPerLoop(for gif: LoadedGif) -> Int {
-        let saved = defaults.integer(forKey: "beats." + gif.source.key)
-        return saved > 0 ? saved : gif.animation.guessedBeatsPerLoop
+    /// Speed doublings on top of the automatic tempo fit (0 = automatic).
+    func speedBias(for source: GifSource) -> Int {
+        defaults.integer(forKey: "speed." + source.key)
     }
 
-    func setBeatsPerLoop(_ beats: Int, for source: GifSource) {
-        defaults.set(beats, forKey: "beats." + source.key)
+    func setSpeedBias(_ bias: Int, for source: GifSource) {
+        defaults.set(bias, forKey: "speed." + source.key)
     }
 
     func beatShift(for source: GifSource) -> Double {

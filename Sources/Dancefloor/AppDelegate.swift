@@ -145,8 +145,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, DancerWindowDelegate, 
 
     @objc private func tick() {
         let now = CACurrentMediaTime()
-        let beat = clock.isLocked(at: now) ? clock.beatPosition(at: now) : nil
-        for dancer in dancers { dancer.tick(beat: beat, now: now) }
+        let locked = clock.isLocked(at: now)
+        let beat = locked ? clock.beatPosition(at: now) : nil
+        let period = locked ? clock.period : nil
+        for dancer in dancers { dancer.tick(beat: beat, period: period, now: now) }
     }
 
     // MARK: - Popover
@@ -192,7 +194,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, DancerWindowDelegate, 
         let point = center ?? NSPoint(
             x: .random(in: visible.minX + 150...max(visible.minX + 151, visible.maxX - 150)),
             y: .random(in: visible.minY + 150...max(visible.minY + 151, visible.maxY - 150)))
-        let dancer = DancerWindow(gif: gif, beatsPerLoop: library.beatsPerLoop(for: gif),
+        let dancer = DancerWindow(gif: gif, speedBias: library.speedBias(for: gif.source),
                                   beatShift: library.beatShift(for: gif.source), height: height, center: point)
         dancer.dancerDelegate = self
         dancer.orderFrontRegardless()
@@ -222,7 +224,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, DancerWindowDelegate, 
     }
 
     private func commit(_ gif: LoadedGif, to dancer: DancerWindow) {
-        dancer.replaceGif(gif, beatsPerLoop: library.beatsPerLoop(for: gif), beatShift: library.beatShift(for: gif.source))
+        dancer.replaceGif(gif, speedBias: library.speedBias(for: gif.source), beatShift: library.beatShift(for: gif.source))
         saveDancers()
     }
 
@@ -242,7 +244,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, DancerWindowDelegate, 
     }
 
     func dancerDidChangeTuning(_ dancer: DancerWindow) {
-        library.setBeatsPerLoop(dancer.beatsPerLoop, for: dancer.gif.source)
+        library.setSpeedBias(dancer.speedBias, for: dancer.gif.source)
         library.setBeatShift(dancer.beatShift, for: dancer.gif.source)
     }
 
@@ -342,7 +344,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, DancerWindowDelegate, 
         guard let item else { return dancer.setPreview(nil) }
         hoverTask = Task {
             guard let gif = try? await loadFull(item), !Task.isCancelled else { return }
-            dancer.setPreview(gif, beatsPerLoop: library.beatsPerLoop(for: gif), beatShift: library.beatShift(for: gif.source))
+            dancer.setPreview(gif, speedBias: library.speedBias(for: gif.source), beatShift: library.beatShift(for: gif.source))
         }
     }
 

@@ -16,6 +16,8 @@ Dancefloor lives in the menu bar (🕺, which shows the BPM once it locks on).
 - **Click 🕺** in the menu bar to open the picker: search GIPHY, tap a search chip, or browse
   My folder. Click any GIF to add it as a dancer. Right-click a chip to remove it; **+** adds one.
   ⇄ randomises every dancer; ⚙ has source, sync, GIPHY key, folder and quit.
+- **Speed is automatic**: each dancer loops over 1, 2, 4, 8… beats, whichever keeps it closest
+  to the GIF's own speed (within about 1.4×). ½× and 2× shift from there; right-click → Automatic Speed resets.
 - **Click a dancer** for its swap strip: hover an alternative to preview it on the dancer, click
   to swap. Below that: ½× / 2× speed, shift half a beat, ♥ keep in your folder, 🗑 remove.
 - **Drag** a dancer to move it, **scroll** over it to resize, **right-click** for the full menu.
