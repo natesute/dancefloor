@@ -95,6 +95,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, Dan
         if defaults.bool(forKey: "debugShowPicker") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { self.togglePopover() }
         }
+        if defaults.bool(forKey: "debugShowTrash") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { self.trash.appear() }
+        }
         if defaults.bool(forKey: "debugOpenStrip") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 4) { self.dancers.first.map(self.openStrip) }
         }
