@@ -51,6 +51,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, Dan
     private var popoverClosedAt: CFTimeInterval = 0
     private let trash = TrashZone()
     private var hideHotKey: HotKey?
+    private var pickerHotKey: HotKey?
+    /// Invisible 1pt window at the pointer that the picker attaches to when opened by shortcut.
+    private lazy var pointerAnchor: NSPanel = {
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 1, height: 1),
+                            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.ignoresMouseEvents = true
+        panel.level = .popUpMenu
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+        return panel
+    }()
 
     var syncOffset: Double {
         get { UserDefaults.standard.object(forKey: "syncOffset") as? Double ?? 0.05 }
@@ -92,6 +104,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, Dan
 
         hideHotKey = HotKey(keyCode: kVK_ANSI_D, modifiers: cmdKey | optionKey) { [weak self] in
             self?.dancersHidden.toggle()
+        }
+        pickerHotKey = HotKey(keyCode: kVK_ANSI_F, modifiers: cmdKey | optionKey) { [weak self] in
+            self?.togglePickerAtPointer()
         }
 
         restoreDancers()
@@ -163,7 +178,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, Dan
 
     // MARK: - Popover
 
-    func popoverDidClose(_ notification: Notification) { popoverClosedAt = CACurrentMediaTime() }
+    func popoverDidClose(_ notification: Notification) {
+        popoverClosedAt = CACurrentMediaTime()
+        pointerAnchor.orderOut(nil)
+    }
+
+    /// ⌥⌘F: open the picker at the pointer, which works even when the menu bar is hidden
+    /// (full-screen apps) or 🕺 is behind the notch. Pressing it again closes the picker.
+    private func togglePickerAtPointer() {
+        if popover.isShown { return popover.performClose(nil) }
+        closeStrip(restoreFocus: false)
+        let mouse = NSEvent.mouseLocation
+        pointerAnchor.setFrameOrigin(NSPoint(x: mouse.x, y: mouse.y))
+        pointerAnchor.orderFrontRegardless()
+        guard let anchor = pointerAnchor.contentView else { return }
+        picker.refresh()
+        updateStatus()
+        NSApp.activate()
+        // Open below the pointer unless it's near the bottom of the screen.
+        let screenBottom = (NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main)?.visibleFrame.minY ?? 0
+        let edge: NSRectEdge = mouse.y - screenBottom > PickerView.size.height + 20 ? .minY : .maxY
+        popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: edge)
+    }
 
     @objc private func togglePopover() {
         // A transient popover closes on mouse-down outside it, including on the 🕺 button,

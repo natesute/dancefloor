@@ -400,6 +400,10 @@ private struct SettingsPane: View {
                 }
             }
 
+            row("Open picker") {
+                Text("⌥⌘F").foregroundStyle(.secondary)
+            }
+
             row("Open at login") {
                 Toggle("", isOn: $model.openAtLogin).labelsHidden().toggleStyle(.switch).controlSize(.small)
             }

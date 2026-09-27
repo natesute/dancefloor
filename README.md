@@ -40,6 +40,7 @@ signs ad hoc, which works but makes macOS ask for audio permission again after e
   My folder. Click any GIF to add it as a dancer. Right-click a chip to remove it; **+** adds one.
   ⇄ randomises every dancer, ▤ saves and loads scenes (sets of dancers and positions), and ⚙
   has source, sync, hide, open at login, GIPHY key, folder and quit.
+- **⌥⌘F** opens the picker at your pointer, from any app, including full screen.
 - **⌥⌘D** hides or shows every dancer, from any app.
 - **Speed is automatic**: each dancer loops over 1, 2, 4, 8… beats, whichever keeps it closest
   to the GIF's own speed (within about 1.4×). ½× and 2× shift from there; right-click → Automatic Speed resets.
