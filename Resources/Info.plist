@@ -8,6 +8,8 @@
 	<string>Dancefloor</string>
 	<key>CFBundleDisplayName</key>
 	<string>Dancefloor</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleExecutable</key>
 	<string>Dancefloor</string>
 	<key>CFBundlePackageType</key>

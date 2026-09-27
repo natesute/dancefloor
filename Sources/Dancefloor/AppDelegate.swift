@@ -2,12 +2,13 @@ import AppKit
 import CoreAudio
 import DancefloorCore
 import QuartzCore
+import Carbon
 import SwiftUI
 import os
 
 private let log = Logger(subsystem: "com.natesute.dancefloor", category: "app")
 
-private struct SavedDancer: Codable {
+struct SavedDancer: Codable {
     let source: GifSource
     let title: String
     let term: String?
@@ -49,6 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, Dan
     private var isRestoring = false
     private var popoverClosedAt: CFTimeInterval = 0
     private let trash = TrashZone()
+    private var hideHotKey: HotKey?
 
     var syncOffset: Double {
         get { UserDefaults.standard.object(forKey: "syncOffset") as? Double ?? 0.05 }
@@ -86,6 +88,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, Dan
 
         NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) {
             [weak self] _ in MainActor.assumeIsolated { self?.closeStrip(restoreFocus: false) }
+        }
+
+        hideHotKey = HotKey(keyCode: kVK_ANSI_D, modifiers: cmdKey | optionKey) { [weak self] in
+            self?.dancersHidden.toggle()
         }
 
         restoreDancers()
@@ -197,9 +203,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, Dan
 
     func closePicker() { popover.performClose(nil) }
 
+    var dancersHidden = false {
+        didSet {
+            guard dancersHidden != oldValue else { return }
+            if dancersHidden { closeStrip(restoreFocus: false) }
+            for dancer in dancers {
+                if dancersHidden { dancer.orderOut(nil) } else { dancer.orderFrontRegardless() }
+            }
+            statusItem.button?.appearsDisabled = dancersHidden
+            if picker.dancersHidden != dancersHidden { picker.dancersHidden = dancersHidden }
+        }
+    }
+
+    // MARK: - Scenes
+
+    private var scenes: [String: [SavedDancer]] {
+        get {
+            UserDefaults.standard.data(forKey: "scenes")
+                .flatMap { try? JSONDecoder().decode([String: [SavedDancer]].self, from: $0) } ?? [:]
+        }
+        set { UserDefaults.standard.set(try? JSONEncoder().encode(newValue), forKey: "scenes") }
+    }
+
+    var sceneNames: [String] { scenes.keys.sorted { $0.localizedStandardCompare($1) == .orderedAscending } }
+
+    func saveScene(named name: String) { scenes[name] = currentLayout() }
+
+    func deleteScene(named name: String) { scenes[name] = nil }
+
+    func loadScene(named name: String) {
+        guard let layout = scenes[name] else { return }
+        removeAllDancers()
+        dancersHidden = false
+        restore(layout)
+    }
+
     // MARK: - Dancers
 
     private func addDancer(_ gif: LoadedGif, height: CGFloat = 220, center: NSPoint? = nil) {
+        if dancersHidden { dancersHidden = false }
         let visible = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1200, height: 800)
         let point = center ?? NSPoint(
             x: .random(in: visible.minX + 150...max(visible.minX + 151, visible.maxX - 150)),
@@ -302,13 +344,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, Dan
         updateStatus()
     }
 
-    private func saveDancers() {
-        guard !isRestoring else { return }
-        let saved = dancers.map {
+    private func currentLayout() -> [SavedDancer] {
+        dancers.map {
             SavedDancer(source: $0.gif.source, title: $0.gif.title, term: $0.gif.term,
                         x: $0.center.x, y: $0.center.y, height: $0.dancerHeight)
         }
-        UserDefaults.standard.set(try? JSONEncoder().encode(saved), forKey: "dancers")
+    }
+
+    private func saveDancers() {
+        guard !isRestoring else { return }
+        UserDefaults.standard.set(try? JSONEncoder().encode(currentLayout()), forKey: "dancers")
     }
 
     private func restoreDancers() {
@@ -317,6 +362,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, Dan
             // Nothing saved: start with one dancer so there's something to see.
             return addRandomDancer()
         }
+        restore(saved)
+    }
+
+    private func restore(_ saved: [SavedDancer]) {
         isRestoring = true
         Task { @MainActor in
             // Download in parallel, add in the saved order.

@@ -2,11 +2,13 @@
 
 Dancing GIFs that float over your Mac and dance to the beat of whatever is playing.
 
-## Build and run
+## Install
 
 ```bash
-Scripts/build-app.sh && open build/Dancefloor.app
+Scripts/install.sh
 ```
+
+Builds, copies to `/Applications/Dancefloor.app` and launches it. Turn on **Open at login** in ⚙.
 
 Needs macOS 15+. On first launch, allow audio capture so the dancers can hear the music.
 Dancefloor lives in the menu bar (🕺, which shows the BPM once it locks on).
@@ -15,7 +17,9 @@ Dancefloor lives in the menu bar (🕺, which shows the BPM once it locks on).
 
 - **Click 🕺** in the menu bar to open the picker: search GIPHY, tap a search chip, or browse
   My folder. Click any GIF to add it as a dancer. Right-click a chip to remove it; **+** adds one.
-  ⇄ randomises every dancer; ⚙ has source, sync, GIPHY key, folder and quit.
+  ⇄ randomises every dancer, ▤ saves and loads scenes (sets of dancers and positions), and ⚙
+  has source, sync, hide, open at login, GIPHY key, folder and quit.
+- **⌥⌘D** hides or shows every dancer, from any app.
 - **Speed is automatic**: each dancer loops over 1, 2, 4, 8… beats, whichever keeps it closest
   to the GIF's own speed (within about 1.4×). ½× and 2× shift from there; right-click → Automatic Speed resets.
 - **Click a dancer** for its swap strip: hover an alternative to preview it on the dancer, click

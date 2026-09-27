@@ -1,4 +1,5 @@
 import AppKit
+import ServiceManagement
 import SwiftUI
 
 @MainActor
@@ -9,6 +10,11 @@ protocol DancefloorController: AnyObject {
     func openFolder()
     func closePicker()
     var syncOffset: Double { get set }
+    var dancersHidden: Bool { get set }
+    var sceneNames: [String] { get }
+    func saveScene(named name: String)
+    func loadScene(named name: String)
+    func deleteScene(named name: String)
 }
 
 @MainActor
@@ -18,13 +24,33 @@ final class PickerModel: ObservableObject {
         case folder
     }
 
+    enum Pane {
+        case browse, scenes, settings
+    }
+
     @Published var query = ""
     @Published private(set) var browse: Browse = .folder
     @Published private(set) var items: [PickerItem] = []
     @Published private(set) var isLoading = false
     @Published var message: String?
     @Published private(set) var addingID: String?
-    @Published var showSettings = false
+    @Published var pane: Pane = .browse
+    @Published var sceneDraft = ""
+    @Published private(set) var scenes: [String] = []
+    @Published var dancersHidden = false {
+        didSet { if controller?.dancersHidden != dancersHidden { controller?.dancersHidden = dancersHidden } }
+    }
+    @Published var openAtLogin = SMAppService.mainApp.status == .enabled {
+        didSet {
+            guard openAtLogin != (SMAppService.mainApp.status == .enabled) else { return }
+            do {
+                if openAtLogin { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+            } catch {
+                message = "Couldn't change Open at login: \(error.localizedDescription)"
+                openAtLogin = SMAppService.mainApp.status == .enabled
+            }
+        }
+    }
     @Published var addingTerm = false
     @Published var newTerm = ""
     @Published var keyDraft = ""
@@ -52,6 +78,9 @@ final class PickerModel: ObservableObject {
         hasKey = library.giphyKey != nil
         mode = library.mode
         syncMs = Int(((controller?.syncOffset ?? 0) * 1000).rounded())
+        scenes = controller?.sceneNames ?? []
+        dancersHidden = controller?.dancersHidden ?? false
+        openAtLogin = SMAppService.mainApp.status == .enabled
         if !hasKey {
             browse = .folder
         } else if case .folder = browse, items.isEmpty, let first = terms.first {
@@ -127,8 +156,26 @@ final class PickerModel: ObservableObject {
         guard !key.isEmpty else { return }
         library.giphyKey = key
         hasKey = true
-        showSettings = false
+        pane = .browse
         select(.term(terms.first ?? "dance"))
+    }
+
+    func saveScene() {
+        let name = sceneDraft.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        controller?.saveScene(named: name)
+        sceneDraft = ""
+        scenes = controller?.sceneNames ?? []
+    }
+
+    func loadScene(_ name: String) {
+        controller?.loadScene(named: name)
+        controller?.closePicker()
+    }
+
+    func deleteScene(_ name: String) {
+        controller?.deleteScene(named: name)
+        scenes = controller?.sceneNames ?? []
     }
 
     func nudgeSync(_ delta: Double) {
@@ -149,10 +196,10 @@ struct PickerView: View {
             if let problem = model.audioProblem {
                 Label(problem, systemImage: "speaker.slash").font(.system(size: 11)).foregroundStyle(.red)
             }
-            if model.showSettings {
-                SettingsPane(model: model)
-            } else {
-                BrowsePane(model: model)
+            switch model.pane {
+            case .browse: BrowsePane(model: model)
+            case .scenes: ScenesPane(model: model)
+            case .settings: SettingsPane(model: model)
             }
         }
         .padding(12)
@@ -160,21 +207,63 @@ struct PickerView: View {
     }
 }
 
-/// Shuffle and settings, beside the search field (settings swaps to a back button).
+/// Shuffle, scenes and settings beside the search field; a back button on the other panes.
 @MainActor
 private func toolbarButtons(model: PickerModel) -> some View {
     HStack(spacing: 10) {
-        if !model.showSettings {
+        if model.pane == .browse {
             Button { model.controller?.randomiseAll() } label: { Image(systemName: "shuffle") }
                 .help("Randomise all dancers")
+            Button { model.pane = .scenes } label: { Image(systemName: "square.stack") }
+                .help("Scenes")
+            Button { model.pane = .settings } label: { Image(systemName: "gearshape") }
+                .help("Settings")
+        } else {
+            Button { model.pane = .browse } label: { Image(systemName: "chevron.backward") }
+                .help("Back")
         }
-        Button { model.showSettings.toggle() } label: {
-            Image(systemName: model.showSettings ? "chevron.backward" : "gearshape")
-        }
-        .help(model.showSettings ? "Back" : "Settings")
     }
     .font(.system(size: 13))
     .buttonStyle(.borderless)
+}
+
+private struct ScenesPane: View {
+    @ObservedObject var model: PickerModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Scenes").font(.headline)
+                Spacer()
+                toolbarButtons(model: model)
+            }
+            HStack(spacing: 6) {
+                TextField("Name this layout", text: $model.sceneDraft)
+                    .onSubmit { model.saveScene() }
+                Button("Save") { model.saveScene() }.disabled(model.sceneDraft.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(model.scenes, id: \.self) { name in
+                        HStack {
+                            Button { model.loadScene(name) } label: {
+                                Text(name).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            Button { model.deleteScene(name) } label: { Image(systemName: "trash") }
+                                .buttonStyle(.borderless)
+                                .foregroundStyle(.secondary)
+                                .help("Delete scene")
+                        }
+                        .padding(.vertical, 8)
+                        Divider()
+                    }
+                }
+            }
+            .frame(maxHeight: .infinity)
+        }
+        .font(.system(size: 12))
+    }
 }
 
 private struct BrowsePane: View {
@@ -304,6 +393,17 @@ private struct SettingsPane: View {
                 }
             }
 
+            row("Hide dancers") {
+                HStack(spacing: 6) {
+                    Text("⌥⌘D").foregroundStyle(.secondary)
+                    Toggle("", isOn: $model.dancersHidden).labelsHidden().toggleStyle(.switch).controlSize(.small)
+                }
+            }
+
+            row("Open at login") {
+                Toggle("", isOn: $model.openAtLogin).labelsHidden().toggleStyle(.switch).controlSize(.small)
+            }
+
             row("GIPHY key") {
                 HStack(spacing: 4) {
                     TextField(model.hasKey ? "Saved. Paste to replace" : "Paste API key", text: $model.keyDraft)
@@ -317,6 +417,9 @@ private struct SettingsPane: View {
             Button("Open my GIF folder") { model.controller?.openFolder() }
             Button("Remove all dancers") { model.controller?.removeAllDancers() }
             Button("Quit Dancefloor") { NSApp.terminate(nil) }
+            if let message = model.message {
+                Text(message).font(.system(size: 11)).foregroundStyle(.red)
+            }
             Spacer()
         }
         .buttonStyle(.link)
