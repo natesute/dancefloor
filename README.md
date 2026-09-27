@@ -13,14 +13,13 @@ Dancefloor lives in the menu bar (🕺, which shows the BPM once it locks on).
 
 ## Using it
 
-- **Menu bar → Add Dancer** (⌘N): a random dancer from GIPHY and/or your folder.
-- **Search GIPHY…**: add a sticker matching a search term, e.g. "shrek".
-- **Randomise All** (⌘R): swap every dancer for a new one.
-- **Edit Random Search Terms…**: the GIPHY searches that Add Dancer and Randomise pick from.
-- **Drag** a dancer to move it, **scroll** over it to resize, **double-click** to swap it.
-- **Right-click** a dancer to set beats per loop, halve or double its speed, shift it by half
-  a beat, keep a GIPHY dancer in your folder, or remove it. Tuning is remembered per GIF.
-- **Sync** in the menu nudges all dancers earlier or later if they look off the beat
+- **Click 🕺** in the menu bar to open the picker: search GIPHY, tap a search chip, or browse
+  My folder. Click any GIF to add it as a dancer. Right-click a chip to remove it; **+** adds one.
+  ⇄ randomises every dancer; ⚙ has source, sync, GIPHY key, folder and quit.
+- **Click a dancer** for its swap strip: hover an alternative to preview it on the dancer, click
+  to swap. Below that: ½× / 2× speed, shift half a beat, ♥ keep in your folder, 🗑 remove.
+- **Drag** a dancer to move it, **scroll** over it to resize, **right-click** for the full menu.
+- **Sync** (⚙) nudges all dancers earlier or later if they look off the beat
   (Bluetooth headphones usually need them later).
 
 Your GIF folder is `~/Pictures/Dancefloor`. Drop any GIF in there.

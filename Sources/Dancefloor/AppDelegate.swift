@@ -2,6 +2,7 @@ import AppKit
 import CoreAudio
 import DancefloorCore
 import QuartzCore
+import SwiftUI
 import os
 
 private let log = Logger(subsystem: "com.natesute.dancefloor", category: "app")
@@ -9,6 +10,7 @@ private let log = Logger(subsystem: "com.natesute.dancefloor", category: "app")
 private struct SavedDancer: Codable {
     let source: GifSource
     let title: String
+    let term: String?
     let x: Double
     let y: Double
     let height: Double
@@ -28,18 +30,23 @@ private final class Analyzer: @unchecked Sendable {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, DancerWindowDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, DancerWindowDelegate, DancefloorController, SwapStripDelegate {
     private let library = GifLibrary()
     private let clock = BeatClock()
     private let tap = SystemAudioTap()
     private let analyzer = Analyzer()
+    private lazy var picker = PickerModel(library: library)
     private var statusItem: NSStatusItem!
+    private let popover = NSPopover()
     private var dancers: [DancerWindow] = []
+    private var strip: SwapStrip?
+    private var appBeforeStrip: NSRunningApplication?
+    private var hoverTask: Task<Void, Never>?
+    private var fullGifCache: [String: LoadedGif] = [:]
     private var displayLink: CADisplayLink?
     private var audioError: String?
-    private var lastEstimate: BeatEstimate?
 
-    private var syncOffset: Double {
+    var syncOffset: Double {
         get { UserDefaults.standard.object(forKey: "syncOffset") as? Double ?? 0.05 }
         set { UserDefaults.standard.set(newValue, forKey: "syncOffset"); clock.offset = newValue }
     }
@@ -49,9 +56,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Dancer
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.title = "🕺"
-        let menu = NSMenu()
-        menu.delegate = self
-        statusItem.menu = menu
+        statusItem.button?.target = self
+        statusItem.button?.action = #selector(togglePopover)
+
+        picker.controller = self
+        popover.behavior = .transient
+        popover.contentViewController = NSHostingController(rootView: PickerView(model: picker))
 
         analyzer.onEstimate = { [weak self] estimate in self?.handle(estimate) }
         tap.onAudio = { [analyzer] samples, sampleRate, time in
@@ -64,7 +74,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Dancer
         link?.add(to: .main, forMode: .common)
         displayLink = link
 
+        NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) {
+            [weak self] _ in MainActor.assumeIsolated { self?.closeStrip(restoreFocus: false) }
+        }
+
         restoreDancers()
+
+        // Launch with `--args -debugShowPicker YES` or `-debugOpenStrip YES` to check the UI without clicking.
+        let defaults = UserDefaults.standard
+        if defaults.bool(forKey: "debugShowPicker") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { self.togglePopover() }
+        }
+        if defaults.bool(forKey: "debugOpenStrip") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4) { self.dancers.first.map(self.openStrip) }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -83,6 +106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Dancer
             audioError = "\(error)"
             log.error("Audio tap failed: \(error, privacy: .public)")
         }
+        updateStatus()
     }
 
     private func watchDefaultOutputDevice() {
@@ -96,14 +120,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Dancer
     }
 
     private func handle(_ estimate: BeatEstimate?) {
-        let now = CACurrentMediaTime()
-        lastEstimate = estimate
         if let e = estimate {
             log.info("Beat \(e.bpm, format: .fixed(precision: 2)) BPM, confidence \(e.confidence, format: .fixed(precision: 2))")
+            clock.update(e, now: CACurrentMediaTime())
         }
-        if let estimate { clock.update(estimate, now: now) }
-        let locked = clock.isLocked(at: now)
-        statusItem.button?.title = locked ? "🕺 \(Int(clock.bpm.rounded()))" : "🕺"
+        updateStatus()
+    }
+
+    private func updateStatus() {
+        let locked = clock.isLocked(at: CACurrentMediaTime())
+        statusItem?.button?.title = locked ? "🕺 \(Int(clock.bpm.rounded()))" : "🕺"
+        let music: String
+        if audioError != nil {
+            music = "Can't hear audio"
+        } else if locked {
+            music = "\(Int(clock.bpm.rounded())) BPM"
+        } else {
+            music = "Waiting for music"
+        }
+        let count = dancers.count == 1 ? "1 dancer" : "\(dancers.count) dancers"
+        let status = "\(music) · \(count)"
+        if picker.status != status { picker.status = status }
     }
 
     @objc private func tick() {
@@ -111,6 +148,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Dancer
         let beat = clock.isLocked(at: now) ? clock.beatPosition(at: now) : nil
         for dancer in dancers { dancer.tick(beat: beat, now: now) }
     }
+
+    // MARK: - Popover
+
+    @objc private func togglePopover() {
+        if popover.isShown {
+            popover.performClose(nil)
+            return
+        }
+        closeStrip(restoreFocus: false)
+        guard let button = statusItem.button else { return }
+        picker.refresh()
+        updateStatus()
+        NSApp.activate()
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+    }
+
+    // MARK: - DancefloorController
+
+    func addDancer(from item: PickerItem) async throws {
+        addDancer(try await loadFull(item))
+    }
+
+    func randomiseAll() {
+        if dancers.isEmpty { return addRandomDancer() }
+        for dancer in dancers { swapToRandom(dancer) }
+    }
+
+    func removeAllDancers() {
+        closeStrip(restoreFocus: false)
+        for dancer in dancers { dancer.close() }
+        dancers.removeAll()
+        saveDancers()
+        updateStatus()
+    }
+
+    func openFolder() { NSWorkspace.shared.open(library.folder) }
 
     // MARK: - Dancers
 
@@ -125,50 +198,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Dancer
         dancer.orderFrontRegardless()
         dancers.append(dancer)
         saveDancers()
+        updateStatus()
     }
 
-    private func run(_ work: @escaping () async throws -> Void) {
-        Task { @MainActor in
-            do { try await work() } catch { self.showError(error) }
+    private func addRandomDancer() {
+        Task {
+            do { addDancer(try await library.random()) } catch { picker.message = error.localizedDescription }
         }
     }
 
-    @objc private func addRandomDancer() {
-        run { self.addDancer(try await self.library.random()) }
+    private func swapToRandom(_ dancer: DancerWindow) {
+        guard !dancer.isLoading else { return }
+        dancer.isLoading = true
+        Task {
+            defer { dancer.isLoading = false }
+            do {
+                let gif = try await library.random(excluding: dancer.gif.source)
+                commit(gif, to: dancer)
+            } catch {
+                picker.message = error.localizedDescription
+            }
+        }
     }
 
-    @objc private func searchGiphy() {
-        guard library.giphyKey != nil else { return promptForKey() }
-        guard let query = prompt(title: "Search GIPHY stickers", message: "Adds a random match, e.g. \"shrek\", \"dancing cat\".",
-                                 placeholder: "dancing") else { return }
-        run { self.addDancer(try await self.library.search(query)) }
-    }
-
-    @objc private func randomiseAll() {
-        if dancers.isEmpty { return addRandomDancer() }
-        for dancer in dancers { dancerWantsNewGif(dancer) }
-    }
-
-    @objc private func removeAll() {
-        for dancer in dancers { dancer.close() }
-        dancers.removeAll()
+    private func commit(_ gif: LoadedGif, to dancer: DancerWindow) {
+        dancer.replaceGif(gif, beatsPerLoop: library.beatsPerLoop(for: gif), beatShift: library.beatShift(for: gif.source))
         saveDancers()
     }
 
-    func dancerWantsNewGif(_ dancer: DancerWindow) {
-        guard !dancer.isLoading else { return }
-        dancer.isLoading = true
-        run {
-            defer { dancer.isLoading = false }
-            let gif = try await self.library.random(excluding: dancer.gif.source)
-            dancer.replaceGif(gif, beatsPerLoop: self.library.beatsPerLoop(for: gif),
-                              beatShift: self.library.beatShift(for: gif.source))
-            self.saveDancers()
-        }
+    /// Full-size GIF for a picker item, cached so hover-then-click doesn't download twice.
+    private func loadFull(_ item: PickerItem) async throws -> LoadedGif {
+        if let hit = fullGifCache[item.id] { return hit }
+        let gif = try await library.load(item)
+        if fullGifCache.count > 40 { fullGifCache.removeAll() }
+        fullGifCache[item.id] = gif
+        return gif
     }
 
+    func dancerWantsNewGif(_ dancer: DancerWindow) { swapToRandom(dancer) }
+
     func dancerWantsToBeKept(_ dancer: DancerWindow) {
-        do { try library.keep(dancer.gif) } catch { showError(error) }
+        do { try library.keep(dancer.gif) } catch { picker.message = error.localizedDescription }
     }
 
     func dancerDidChangeTuning(_ dancer: DancerWindow) {
@@ -176,17 +246,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Dancer
         library.setBeatShift(dancer.beatShift, for: dancer.gif.source)
     }
 
-    func dancerDidMove(_ dancer: DancerWindow) { saveDancers() }
+    func dancerDidMove(_ dancer: DancerWindow) {
+        saveDancers()
+        if strip?.dancer === dancer { strip?.position() }
+    }
+
+    func dancerDidStartDragging(_ dancer: DancerWindow) { closeStrip(restoreFocus: true) }
+
+    func dancerWasClicked(_ dancer: DancerWindow) {
+        if strip?.dancer === dancer { return closeStrip(restoreFocus: true) }
+        openStrip(for: dancer)
+    }
 
     func dancerWantsRemoval(_ dancer: DancerWindow) {
+        if strip?.dancer === dancer { closeStrip(restoreFocus: true) }
         dancer.close()
         dancers.removeAll { $0 === dancer }
         saveDancers()
+        updateStatus()
     }
 
     private func saveDancers() {
         let saved = dancers.map {
-            SavedDancer(source: $0.gif.source, title: $0.gif.title, x: $0.center.x, y: $0.center.y, height: $0.dancerHeight)
+            SavedDancer(source: $0.gif.source, title: $0.gif.title, term: $0.gif.term,
+                        x: $0.center.x, y: $0.center.y, height: $0.dancerHeight)
         }
         UserDefaults.standard.set(try? JSONEncoder().encode(saved), forKey: "dancers")
     }
@@ -199,136 +282,97 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Dancer
         }
         Task { @MainActor in
             for s in saved {
-                guard let gif = try? await library.load(s.source, title: s.title) else { continue }
+                guard let gif = try? await library.load(s.source, title: s.title, term: s.term) else { continue }
                 addDancer(gif, height: s.height, center: NSPoint(x: s.x, y: s.y))
             }
             if dancers.isEmpty { addRandomDancer() }
         }
     }
 
-    // MARK: - Menu
+    // MARK: - Swap strip
 
-    func menuNeedsUpdate(_ menu: NSMenu) {
-        menu.removeAllItems()
+    private func openStrip(for dancer: DancerWindow) {
+        closeStrip(restoreFocus: false)
+        popover.performClose(nil)
+        let newStrip = SwapStrip(dancer: dancer)
+        newStrip.stripDelegate = self
+        newStrip.model.canKeep = dancer.gif.source.isGiphy
+        newStrip.position()
+        strip = newStrip
 
-        let status: String
-        if let audioError {
-            status = "Can't hear audio: \(audioError)"
-        } else if clock.isLocked(at: CACurrentMediaTime()) {
-            status = "Dancing at \(Int(clock.bpm.rounded())) BPM"
-        } else {
-            status = "Waiting for music…"
+        // Activate so hovering the alternatives registers; hand focus back when the strip closes.
+        if !NSApp.isActive { appBeforeStrip = NSWorkspace.shared.frontmostApplication }
+        NSApp.activate()
+        newStrip.makeKeyAndOrderFront(nil)
+        loadAlternatives(for: newStrip)
+    }
+
+    private func loadAlternatives(for strip: SwapStrip) {
+        guard let dancer = strip.dancer else { return }
+        strip.model.isLoading = true
+        strip.model.message = nil
+        Task {
+            do {
+                strip.model.items = try await library.alternatives(for: dancer.gif)
+            } catch {
+                strip.model.items = []
+                strip.model.message = error.localizedDescription
+            }
+            strip.model.isLoading = false
         }
-        let statusLine = NSMenuItem(title: status, action: nil, keyEquivalent: "")
-        statusLine.isEnabled = false
-        menu.addItem(statusLine)
-        menu.addItem(.separator())
+    }
 
-        menu.addItem(item("Add Dancer", #selector(addRandomDancer), key: "n"))
-        menu.addItem(item("Search GIPHY…", #selector(searchGiphy), key: "f"))
-        menu.addItem(item("Randomise All", #selector(randomiseAll), key: "r"))
-        menu.addItem(.separator())
+    private func closeStrip(restoreFocus: Bool) {
+        guard let current = strip else { return }
+        strip = nil
+        current.close()
+        if restoreFocus, let app = appBeforeStrip { app.activate() }
+        appBeforeStrip = nil
+    }
 
-        let source = NSMenuItem(title: "Dancers From", action: nil, keyEquivalent: "")
-        let sourceMenu = NSMenu()
-        for mode in SourceMode.allCases {
-            let i = item(mode.title, #selector(setSourceMode(_:)))
-            i.representedObject = mode.rawValue
-            i.state = library.mode == mode ? .on : .off
-            sourceMenu.addItem(i)
+    func swapStripDidClose(_ closed: SwapStrip) {
+        hoverTask?.cancel()
+        closed.dancer?.setPreview(nil)
+        if strip === closed { strip = nil }
+    }
+
+    func swapStrip(_ strip: SwapStrip, hovered item: PickerItem?) {
+        hoverTask?.cancel()
+        guard let dancer = strip.dancer else { return }
+        guard let item else { return dancer.setPreview(nil) }
+        hoverTask = Task {
+            guard let gif = try? await loadFull(item), !Task.isCancelled else { return }
+            dancer.setPreview(gif, beatsPerLoop: library.beatsPerLoop(for: gif), beatShift: library.beatShift(for: gif.source))
         }
-        source.submenu = sourceMenu
-        menu.addItem(source)
-        menu.addItem(item("Edit Random Search Terms…", #selector(editRandomTerms)))
-        menu.addItem(item(library.giphyKey == nil ? "Set GIPHY API Key…" : "Change GIPHY API Key…", #selector(promptForKey)))
-        menu.addItem(item("Open My GIF Folder", #selector(openFolder)))
-        menu.addItem(.separator())
-
-        let sync = NSMenuItem(title: "Sync (\(Int((syncOffset * 1000).rounded())) ms)", action: nil, keyEquivalent: "")
-        let syncMenu = NSMenu()
-        syncMenu.addItem(item("Dancers Earlier (−20 ms)", #selector(syncEarlier)))
-        syncMenu.addItem(item("Dancers Later (+20 ms)", #selector(syncLater)))
-        syncMenu.addItem(item("Reset", #selector(syncReset)))
-        sync.submenu = syncMenu
-        menu.addItem(sync)
-        if audioError != nil { menu.addItem(item("Retry Audio", #selector(retryAudio))) }
-        menu.addItem(.separator())
-
-        menu.addItem(item("Remove All Dancers", #selector(removeAll)))
-        menu.addItem(item("Quit Dancefloor", #selector(NSApplication.terminate(_:)), key: "q", target: NSApp))
     }
 
-    private func item(_ title: String, _ action: Selector, key: String = "", target: AnyObject? = nil) -> NSMenuItem {
-        let i = NSMenuItem(title: title, action: action, keyEquivalent: key)
-        i.target = target ?? self
-        return i
+    func swapStrip(_ strip: SwapStrip, picked item: PickerItem) {
+        guard let dancer = strip.dancer else { return }
+        hoverTask?.cancel()
+        strip.model.busyID = item.id
+        Task {
+            defer { strip.model.busyID = nil }
+            do {
+                commit(try await loadFull(item), to: dancer)
+                closeStrip(restoreFocus: true)
+            } catch {
+                strip.model.message = error.localizedDescription
+            }
+        }
     }
 
-    @objc private func setSourceMode(_ sender: NSMenuItem) {
-        if let raw = sender.representedObject as? String, let mode = SourceMode(rawValue: raw) { library.mode = mode }
-    }
-
-    @objc private func openFolder() { NSWorkspace.shared.open(library.folder) }
-    @objc private func syncEarlier() { syncOffset -= 0.02 }
-    @objc private func syncLater() { syncOffset += 0.02 }
-    @objc private func syncReset() { syncOffset = 0.05 }
-    @objc private func retryAudio() { startAudio() }
-
-    @objc private func promptForKey() {
-        guard let key = prompt(title: "GIPHY API key",
-                               message: "Create a free app at developers.giphy.com and paste its API key here.",
-                               placeholder: "API key", initial: library.giphyKey ?? "") else { return }
-        library.giphyKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    @objc private func editRandomTerms() {
-        NSApp.activate()
-        let alert = NSAlert()
-        alert.messageText = "Random search terms"
-        alert.informativeText = "One per line. Add Dancer and Randomise pick one of these at random and search GIPHY for it. Clear everything to restore the defaults."
-        alert.addButton(withTitle: "Save")
-        alert.addButton(withTitle: "Cancel")
-
-        let scroll = NSTextView.scrollableTextView()
-        scroll.frame = NSRect(x: 0, y: 0, width: 300, height: 220)
-        scroll.borderType = .bezelBorder
-        let text = scroll.documentView as! NSTextView
-        text.string = library.randomTerms.joined(separator: "\n")
-        text.font = .systemFont(ofSize: NSFont.systemFontSize)
-        text.isAutomaticQuoteSubstitutionEnabled = false
-        alert.accessoryView = scroll
-        alert.window.initialFirstResponder = text
-
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        library.randomTerms = text.string.split(whereSeparator: \.isNewline)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-    }
-
-    // MARK: - Alerts
-
-    private func prompt(title: String, message: String, placeholder: String, initial: String = "") -> String? {
-        NSApp.activate()
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = message
-        alert.addButton(withTitle: "OK")
-        alert.addButton(withTitle: "Cancel")
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
-        field.placeholderString = placeholder
-        field.stringValue = initial
-        alert.accessoryView = field
-        alert.window.initialFirstResponder = field
-        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
-        let value = field.stringValue.trimmingCharacters(in: .whitespaces)
-        return value.isEmpty ? nil : value
-    }
-
-    private func showError(_ error: Error) {
-        NSApp.activate()
-        let alert = NSAlert()
-        alert.messageText = "Dancefloor"
-        alert.informativeText = error.localizedDescription
-        alert.runModal()
+    func swapStrip(_ strip: SwapStrip, perform action: StripAction) {
+        guard let dancer = strip.dancer else { return }
+        switch action {
+        case .slower: dancer.halveSpeed()
+        case .faster: dancer.doubleSpeed()
+        case .shiftHalfBeat: dancer.shiftHalfBeat()
+        case .keep:
+            guard !strip.model.kept else { return }
+            dancerWantsToBeKept(dancer)
+            strip.model.kept = true
+        case .remove: dancerWantsRemoval(dancer)
+        case .refresh: loadAlternatives(for: strip)
+        }
     }
 }

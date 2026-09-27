@@ -1,14 +1,15 @@
 import Foundation
 
 struct GiphyClient {
-    struct Gif: Decodable {
-        struct Rendition: Decodable {
+    struct Gif: Decodable, Hashable {
+        struct Rendition: Decodable, Hashable {
             let url: String?
             let size: String?
         }
-        struct Images: Decodable {
+        struct Images: Decodable, Hashable {
             let original: Rendition
             let fixed_height: Rendition?
+            let fixed_height_small: Rendition?
         }
         let id: String
         let title: String
@@ -19,6 +20,11 @@ struct GiphyClient {
             let originalSize = Int(images.original.size ?? "") ?? 0
             let pick = originalSize > 0 && originalSize <= 5_000_000 ? images.original : (images.fixed_height ?? images.original)
             return pick.url.flatMap(URL.init(string:))
+        }
+
+        /// ~100px tall, for picker thumbnails.
+        var previewURL: URL? {
+            (images.fixed_height_small?.url ?? images.fixed_height?.url ?? images.original.url).flatMap(URL.init(string:))
         }
     }
 

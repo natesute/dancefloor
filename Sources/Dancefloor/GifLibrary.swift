@@ -16,6 +16,8 @@ enum GifSource: Codable, Equatable {
         }
     }
 
+    static func == (a: GifSource, b: GifSource) -> Bool { a.key == b.key }
+
     var isGiphy: Bool { if case .giphy = self { true } else { false } }
 }
 
@@ -24,6 +26,29 @@ struct LoadedGif {
     let title: String
     let data: Data
     let animation: GIFAnimation
+    /// The search that found it, so the swap strip can offer more like it.
+    let term: String?
+}
+
+/// Something shown in the picker grid or swap strip, before its full GIF is downloaded.
+struct PickerItem: Identifiable, Hashable {
+    enum Kind: Hashable {
+        case giphy(id: String, url: URL)
+        case local(path: String)
+    }
+
+    let id: String
+    let title: String
+    let previewURL: URL
+    let kind: Kind
+    let term: String?
+
+    var source: GifSource {
+        switch kind {
+        case .giphy(let id, let url): .giphy(id: id, url: url.absoluteString)
+        case .local(let path): .local(path: path)
+        }
+    }
 }
 
 enum SourceMode: String, CaseIterable {
@@ -31,9 +56,9 @@ enum SourceMode: String, CaseIterable {
 
     var title: String {
         switch self {
-        case .both: "GIPHY + My Folder"
-        case .giphy: "GIPHY Only"
-        case .local: "My Folder Only"
+        case .both: "GIPHY + folder"
+        case .giphy: "GIPHY"
+        case .local: "My folder"
         }
     }
 }
@@ -89,53 +114,84 @@ final class GifLibrary {
 
     // MARK: - Picking GIFs
 
-    func random(excluding current: GifSource? = nil) async throws -> LoadedGif {
-        let locals = localFiles().filter { GifSource.local(path: $0.path) != current }
-        let canGiphy = giphyKey != nil && mode != .local
-        let canLocal = !locals.isEmpty && mode != .giphy
-
-        if canGiphy && (!canLocal || Bool.random()) {
-            return try await search(randomTerms.randomElement() ?? "dancing", deep: true)
-        }
-        guard canLocal, let file = locals.randomElement() else { throw Failure.nothingToPick }
-        return try loadLocal(.local(path: file.path), title: file.deletingPathExtension().lastPathComponent)
-    }
-
-    /// A random sticker from a GIPHY search. `deep` sometimes looks past the first page for
-    /// variety. Falls back to the first page, then to regular GIFs, when a page is empty.
-    func search(_ query: String, deep: Bool = false) async throws -> LoadedGif {
+    /// GIPHY results for a search, stickers first, falling back to regular GIFs. Cached per session
+    /// because beta keys only allow about 100 searches an hour.
+    func giphyItems(for query: String) async throws -> [PickerItem] {
         guard let key = giphyKey else { throw Failure.nothingToPick }
         let client = GiphyClient(apiKey: key)
-        let attempts: [(GiphyClient.Kind, Int)] = (deep && Bool.random() ? [(.stickers, 50)] : [])
-            + [(.stickers, 0), (.gifs, 0)]
-        var pick: GiphyClient.Gif?
-        for (kind, offset) in attempts {
-            let cacheKey = "\(kind.rawValue):\(query.lowercased())#\(offset)"
+        for kind in [GiphyClient.Kind.stickers, .gifs] {
+            let cacheKey = "\(kind.rawValue):\(query.lowercased())"
             var results = searchCache[cacheKey]
             if results == nil {
-                results = try await client.search(query, kind: kind, offset: offset)
+                results = try await client.search(query, kind: kind)
                 searchCache[cacheKey] = results
+                log.info("GIPHY \(kind.rawValue, privacy: .public) '\(query, privacy: .public)': \(results?.count ?? 0) results")
             }
-            log.info("GIPHY \(kind.rawValue, privacy: .public) '\(query, privacy: .public)' offset \(offset): \(results?.count ?? 0) results")
-            pick = results?.filter { $0.downloadURL != nil }.randomElement()
-            if pick != nil { break }
+            let items = (results ?? []).compactMap { gif -> PickerItem? in
+                guard let full = gif.downloadURL, let preview = gif.previewURL else { return nil }
+                return PickerItem(id: "giphy:" + gif.id, title: gif.title.isEmpty ? query : gif.title,
+                                  previewURL: preview, kind: .giphy(id: gif.id, url: full), term: query)
+            }
+            if !items.isEmpty { return items }
         }
-        guard let pick, let url = pick.downloadURL else { throw Failure.noResults(query) }
-        let data = try await client.download(url)
-        guard let animation = GIFAnimation(data: data) else { throw Failure.unreadable }
-        return LoadedGif(source: .giphy(id: pick.id, url: url.absoluteString),
-                         title: pick.title.isEmpty ? query : pick.title, data: data, animation: animation)
+        throw Failure.noResults(query)
+    }
+
+    func localItems() -> [PickerItem] {
+        localFiles().sorted { $0.lastPathComponent < $1.lastPathComponent }.map {
+            PickerItem(id: "local:" + $0.path, title: $0.deletingPathExtension().lastPathComponent,
+                       previewURL: $0, kind: .local(path: $0.path), term: nil)
+        }
+    }
+
+    func load(_ item: PickerItem) async throws -> LoadedGif {
+        switch item.kind {
+        case .local(let path):
+            return try loadLocal(.local(path: path), title: item.title)
+        case .giphy(let id, let url):
+            let data = try await GiphyClient(apiKey: giphyKey ?? "").download(url)
+            guard let animation = GIFAnimation(data: data) else { throw Failure.unreadable }
+            return LoadedGif(source: .giphy(id: id, url: url.absoluteString), title: item.title, data: data,
+                             animation: animation, term: item.term)
+        }
+    }
+
+    func random(excluding current: GifSource? = nil) async throws -> LoadedGif {
+        let pool = try await candidates(term: randomTerms.randomElement() ?? "dancing")
+            .filter { $0.source != current }
+        guard let pick = pool.randomElement() else { throw Failure.nothingToPick }
+        return try await load(pick)
+    }
+
+    /// A handful of alternatives for the swap strip: more from the same search, or from the
+    /// folder and a random search for local dancers.
+    func alternatives(for gif: LoadedGif, count: Int = 4) async throws -> [PickerItem] {
+        let pool = try await candidates(term: gif.term ?? randomTerms.randomElement() ?? "dancing")
+        return Array(pool.filter { $0.source != gif.source }.shuffled().prefix(count))
+    }
+
+    /// Everything the current source mode allows for a term.
+    private func candidates(term: String) async throws -> [PickerItem] {
+        var pool: [PickerItem] = []
+        if mode != .giphy { pool += localItems() }
+        if mode != .local, giphyKey != nil {
+            do { pool += try await giphyItems(for: term) } catch where !pool.isEmpty {
+                log.error("GIPHY failed, using folder only: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+        if pool.isEmpty { throw Failure.nothingToPick }
+        return pool
     }
 
     /// Reload a saved dancer's GIF.
-    func load(_ source: GifSource, title: String) async throws -> LoadedGif {
+    func load(_ source: GifSource, title: String, term: String?) async throws -> LoadedGif {
         switch source {
         case .local:
             return try loadLocal(source, title: title)
         case .giphy(_, let url):
             let data = try await GiphyClient(apiKey: giphyKey ?? "").download(URL(string: url)!)
             guard let animation = GIFAnimation(data: data) else { throw Failure.unreadable }
-            return LoadedGif(source: source, title: title, data: data, animation: animation)
+            return LoadedGif(source: source, title: title, data: data, animation: animation, term: term)
         }
     }
 
@@ -143,7 +199,7 @@ final class GifLibrary {
         guard case .local(let path) = source,
               let data = FileManager.default.contents(atPath: path),
               let animation = GIFAnimation(data: data) else { throw Failure.unreadable }
-        return LoadedGif(source: source, title: title, data: data, animation: animation)
+        return LoadedGif(source: source, title: title, data: data, animation: animation, term: nil)
     }
 
     /// Save a GIPHY dancer into the local folder so it's always available.

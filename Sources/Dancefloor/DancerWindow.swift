@@ -8,6 +8,8 @@ protocol DancerWindowDelegate: AnyObject {
     func dancerDidChangeTuning(_ dancer: DancerWindow)
     func dancerDidMove(_ dancer: DancerWindow)
     func dancerWantsRemoval(_ dancer: DancerWindow)
+    func dancerWasClicked(_ dancer: DancerWindow)
+    func dancerDidStartDragging(_ dancer: DancerWindow)
 }
 
 /// One floating, transparent, draggable dancer. Each dancer is its own small window, so
@@ -22,6 +24,9 @@ final class DancerWindow: NSPanel {
 
     private let dancerView = DancerView()
     private var shownFrame = -1
+    /// Temporarily shown while hovering an alternative in the swap strip.
+    private var preview: (gif: LoadedGif, beats: Int, shift: Double)?
+    private var shown: LoadedGif { preview?.gif ?? gif }
     var isLoading = false { didSet { dancerView.alphaValue = isLoading ? 0.5 : 1 } }
 
     init(gif: LoadedGif, beatsPerLoop: Int, beatShift: Double, height: CGFloat, center: NSPoint) {
@@ -48,7 +53,14 @@ final class DancerWindow: NSPanel {
     var dancerHeight: CGFloat { frame.height }
     var center: NSPoint { NSPoint(x: frame.midX, y: frame.midY) }
 
+    func setPreview(_ previewGif: LoadedGif?, beatsPerLoop: Int = 4, beatShift: Double = 0) {
+        preview = previewGif.map { ($0, beatsPerLoop, beatShift) }
+        shownFrame = -1
+        setFrame(Self.frame(for: shown.animation, height: frame.height, center: center), display: true)
+    }
+
     func replaceGif(_ newGif: LoadedGif, beatsPerLoop: Int, beatShift: Double) {
+        preview = nil
         gif = newGif
         self.beatsPerLoop = beatsPerLoop
         self.beatShift = beatShift
@@ -59,10 +71,12 @@ final class DancerWindow: NSPanel {
 
     /// Called every display refresh. `beat` is nil when there's no music to follow.
     func tick(beat: Double?, now: Double) {
-        let anim = gif.animation
+        let anim = shown.animation
+        let beats = preview?.beats ?? beatsPerLoop
+        let shift = preview?.shift ?? beatShift
         let progress: Double
         if let beat {
-            progress = (beat - beatShift) / Double(beatsPerLoop)
+            progress = (beat - shift) / Double(beats)
         } else {
             progress = now / anim.duration
         }
@@ -74,13 +88,13 @@ final class DancerWindow: NSPanel {
         shownFrame = index
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        dancerView.layer?.contents = gif.animation.frames[index]
+        dancerView.layer?.contents = shown.animation.frames[index]
         CATransaction.commit()
     }
 
     func resize(by factor: CGFloat) {
         let height = min(900, max(60, frame.height * factor))
-        setFrame(Self.frame(for: gif.animation, height: height, center: center), display: true)
+        setFrame(Self.frame(for: shown.animation, height: height, center: center), display: true)
     }
 
     private static func frame(for anim: GIFAnimation, height: CGFloat, center: NSPoint) -> NSRect {
@@ -108,7 +122,7 @@ final class DancerWindow: NSPanel {
         menu.addItem(beats)
         menu.addItem(item("Faster (Halve Loop)", #selector(faster)))
         menu.addItem(item("Slower (Double Loop)", #selector(slower)))
-        menu.addItem(item("Shift Half a Beat", #selector(shiftHalfBeat)))
+        menu.addItem(item("Shift Half a Beat", #selector(shiftHalfBeatAction)))
         menu.addItem(.separator())
         menu.addItem(item("Bigger", #selector(bigger)))
         menu.addItem(item("Smaller", #selector(smaller)))
@@ -136,21 +150,26 @@ final class DancerWindow: NSPanel {
     @objc private func remove() { dancerDelegate?.dancerWantsRemoval(self) }
     @objc private func bigger() { resize(by: 1.25); dancerDelegate?.dancerDidMove(self) }
     @objc private func smaller() { resize(by: 0.8); dancerDelegate?.dancerDidMove(self) }
-    @objc private func setBeats(_ sender: NSMenuItem) { beatsPerLoop = sender.tag; dancerDelegate?.dancerDidChangeTuning(self) }
-    @objc private func faster() { beatsPerLoop = max(1, beatsPerLoop / 2); dancerDelegate?.dancerDidChangeTuning(self) }
-    @objc private func slower() { beatsPerLoop = min(32, beatsPerLoop * 2); dancerDelegate?.dancerDidChangeTuning(self) }
-    @objc private func shiftHalfBeat() {
+    func halveSpeed() { beatsPerLoop = min(32, beatsPerLoop * 2); dancerDelegate?.dancerDidChangeTuning(self) }
+    func doubleSpeed() { beatsPerLoop = max(1, beatsPerLoop / 2); dancerDelegate?.dancerDidChangeTuning(self) }
+    func shiftHalfBeat() {
         beatShift = (beatShift + 0.5).truncatingRemainder(dividingBy: Double(beatsPerLoop))
         dancerDelegate?.dancerDidChangeTuning(self)
     }
+
+    @objc private func setBeats(_ sender: NSMenuItem) { beatsPerLoop = sender.tag; dancerDelegate?.dancerDidChangeTuning(self) }
+    @objc private func faster() { doubleSpeed() }
+    @objc private func slower() { halveSpeed() }
+    @objc private func shiftHalfBeatAction() { shiftHalfBeat() }
 }
 
-/// Draws the current frame and handles drag, double-click, scroll-to-resize and right-click.
+/// Draws the current frame and handles click, drag, scroll-to-resize and right-click.
 @MainActor
 private final class DancerView: NSView {
     weak var window_: DancerWindow?
     private var dragStart: NSPoint?
     private var originStart: NSPoint?
+    private var dragged = false
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -164,22 +183,26 @@ private final class DancerView: NSView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func mouseDown(with event: NSEvent) {
-        if event.clickCount == 2 {
-            window_.map { $0.dancerDelegate?.dancerWantsNewGif($0) }
-            return
-        }
         dragStart = NSEvent.mouseLocation
         originStart = window?.frame.origin
+        dragged = false
     }
 
     override func mouseDragged(with event: NSEvent) {
         guard let dragStart, let originStart, let window else { return }
         let now = NSEvent.mouseLocation
+        if !dragged {
+            // A few points of wobble still counts as a click.
+            guard hypot(now.x - dragStart.x, now.y - dragStart.y) > 3 else { return }
+            dragged = true
+            window_.map { $0.dancerDelegate?.dancerDidStartDragging($0) }
+        }
         window.setFrameOrigin(NSPoint(x: originStart.x + now.x - dragStart.x, y: originStart.y + now.y - dragStart.y))
     }
 
     override func mouseUp(with event: NSEvent) {
-        if dragStart != nil, let w = window_ { w.dancerDelegate?.dancerDidMove(w) }
+        guard dragStart != nil, let w = window_ else { return }
+        if dragged { w.dancerDelegate?.dancerDidMove(w) } else { w.dancerDelegate?.dancerWasClicked(w) }
         dragStart = nil
     }
 
