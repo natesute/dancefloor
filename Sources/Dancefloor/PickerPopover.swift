@@ -139,6 +139,7 @@ final class PickerModel: ObservableObject {
 // MARK: - Views
 
 struct PickerView: View {
+    static let size = CGSize(width: 360, height: 520)
     @ObservedObject var model: PickerModel
 
     var body: some View {
@@ -164,7 +165,7 @@ struct PickerView: View {
             .buttonStyle(.borderless)
         }
         .padding(12)
-        .frame(width: 360, height: 520)
+        .frame(width: Self.size.width, height: Self.size.height)
     }
 }
 

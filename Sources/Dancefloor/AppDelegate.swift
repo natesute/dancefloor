@@ -45,6 +45,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, DancerWindowDelegate, 
     private var fullGifCache: [String: LoadedGif] = [:]
     private var displayLink: CADisplayLink?
     private var audioError: String?
+    /// True while saved dancers are loading, so a half-restored list never overwrites the saved one.
+    private var isRestoring = false
 
     var syncOffset: Double {
         get { UserDefaults.standard.object(forKey: "syncOffset") as? Double ?? 0.05 }
@@ -61,7 +63,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, DancerWindowDelegate, 
 
         picker.controller = self
         popover.behavior = .transient
-        popover.contentViewController = NSHostingController(rootView: PickerView(model: picker))
+        // Fixed size: letting SwiftUI drive it made the popover grow with the grid and get
+        // pushed up past the top of the screen.
+        let hosting = NSHostingController(rootView: PickerView(model: picker))
+        hosting.sizingOptions = []
+        popover.contentViewController = hosting
+        popover.contentSize = PickerView.size
 
         analyzer.onEstimate = { [weak self] estimate in self?.handle(estimate) }
         tap.onAudio = { [analyzer] samples, sampleRate, time in
@@ -269,6 +276,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, DancerWindowDelegate, 
     }
 
     private func saveDancers() {
+        guard !isRestoring else { return }
         let saved = dancers.map {
             SavedDancer(source: $0.gif.source, title: $0.gif.title, term: $0.gif.term,
                         x: $0.center.x, y: $0.center.y, height: $0.dancerHeight)
@@ -282,12 +290,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, DancerWindowDelegate, 
             // Nothing saved: start with one dancer so there's something to see.
             return addRandomDancer()
         }
+        isRestoring = true
         Task { @MainActor in
-            for s in saved {
-                guard let gif = try? await library.load(s.source, title: s.title, term: s.term) else { continue }
+            // Download in parallel, add in the saved order.
+            let gifs = await withTaskGroup(of: (Int, LoadedGif?).self) { group in
+                for (i, s) in saved.enumerated() {
+                    group.addTask { @MainActor in (i, try? await self.library.load(s.source, title: s.title, term: s.term)) }
+                }
+                var results = [LoadedGif?](repeating: nil, count: saved.count)
+                for await (i, gif) in group { results[i] = gif }
+                return results
+            }
+            for (s, gif) in zip(saved, gifs) {
+                guard let gif else { continue }
                 addDancer(gif, height: s.height, center: NSPoint(x: s.x, y: s.y))
             }
-            if dancers.isEmpty { addRandomDancer() }
+            isRestoring = false
+            if dancers.isEmpty { addRandomDancer() } else { saveDancers() }
         }
     }
 
