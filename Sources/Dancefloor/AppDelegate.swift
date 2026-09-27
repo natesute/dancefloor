@@ -48,6 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, Dan
     /// True while saved dancers are loading, so a half-restored list never overwrites the saved one.
     private var isRestoring = false
     private var popoverClosedAt: CFTimeInterval = 0
+    private let trash = TrashZone()
 
     var syncOffset: Double {
         get { UserDefaults.standard.object(forKey: "syncOffset") as? Double ?? 0.05 }
@@ -262,11 +263,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, Dan
     }
 
     func dancerDidMove(_ dancer: DancerWindow) {
+        if trash.isVisible {
+            let dropped = trash.track(pointer: NSEvent.mouseLocation)
+            trash.disappear()
+            if dropped { return discard(dancer) }
+        }
         saveDancers()
         if strip?.dancer === dancer { strip?.position() }
     }
 
-    func dancerDidStartDragging(_ dancer: DancerWindow) { closeStrip(restoreFocus: true) }
+    func dancerDidStartDragging(_ dancer: DancerWindow) {
+        closeStrip(restoreFocus: true)
+        trash.appear()
+    }
+
+    func dancerIsDragging(_ dancer: DancerWindow) {
+        dancer.alphaValue = trash.track(pointer: NSEvent.mouseLocation) ? 0.4 : 1
+    }
+
+    /// Shrink and fade out, then remove.
+    private func discard(_ dancer: DancerWindow) {
+        let frame = dancer.frame
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.18
+            dancer.animator().alphaValue = 0
+            dancer.animator().setFrame(frame.insetBy(dx: frame.width * 0.4, dy: frame.height * 0.4), display: true)
+        }) {
+            MainActor.assumeIsolated { self.dancerWantsRemoval(dancer) }
+        }
+    }
 
     func dancerWasClicked(_ dancer: DancerWindow) {
         if strip?.dancer === dancer { return closeStrip(restoreFocus: true) }

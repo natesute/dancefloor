@@ -10,6 +10,7 @@ protocol DancerWindowDelegate: AnyObject {
     func dancerWantsRemoval(_ dancer: DancerWindow)
     func dancerWasClicked(_ dancer: DancerWindow)
     func dancerDidStartDragging(_ dancer: DancerWindow)
+    func dancerIsDragging(_ dancer: DancerWindow)
 }
 
 /// One floating, transparent, draggable dancer. Each dancer is its own small window, so
@@ -204,6 +205,7 @@ private final class DancerView: NSView {
             window_.map { $0.dancerDelegate?.dancerDidStartDragging($0) }
         }
         window.setFrameOrigin(NSPoint(x: originStart.x + now.x - dragStart.x, y: originStart.y + now.y - dragStart.y))
+        window_.map { $0.dancerDelegate?.dancerIsDragging($0) }
     }
 
     override func mouseUp(with event: NSEvent) {
