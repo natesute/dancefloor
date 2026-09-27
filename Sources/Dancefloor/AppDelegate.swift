@@ -30,7 +30,7 @@ private final class Analyzer: @unchecked Sendable {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, DancerWindowDelegate, DancefloorController, SwapStripDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, DancerWindowDelegate, DancefloorController, SwapStripDelegate {
     private let library = GifLibrary()
     private let clock = BeatClock()
     private let tap = SystemAudioTap()
@@ -47,6 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, DancerWindowDelegate, 
     private var audioError: String?
     /// True while saved dancers are loading, so a half-restored list never overwrites the saved one.
     private var isRestoring = false
+    private var popoverClosedAt: CFTimeInterval = 0
 
     var syncOffset: Double {
         get { UserDefaults.standard.object(forKey: "syncOffset") as? Double ?? 0.05 }
@@ -63,6 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, DancerWindowDelegate, 
 
         picker.controller = self
         popover.behavior = .transient
+        popover.delegate = self
         // Fixed size: letting SwiftUI drive it made the popover grow with the grid and get
         // pushed up past the top of the screen.
         let hosting = NSHostingController(rootView: PickerView(model: picker))
@@ -160,8 +162,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, DancerWindowDelegate, 
 
     // MARK: - Popover
 
+    func popoverDidClose(_ notification: Notification) { popoverClosedAt = CACurrentMediaTime() }
+
     @objc private func togglePopover() {
-        if popover.isShown {
+        // A transient popover closes on mouse-down outside it, including on the 🕺 button,
+        // before this action runs. Treat that click as "close" rather than reopening.
+        if popover.isShown || CACurrentMediaTime() - popoverClosedAt < 0.3 {
             popover.performClose(nil)
             return
         }
