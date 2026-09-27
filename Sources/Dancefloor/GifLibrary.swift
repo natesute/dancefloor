@@ -76,10 +76,7 @@ final class GifLibrary {
         }
     }
 
-    static let defaultTerms = [
-        "dancing", "dance", "twerk", "shrek dance", "dancing cat", "dancing dog", "dance party",
-        "dancing animal", "breakdance", "dancing baby", "dancing frog", "dancing banana", "vibing",
-    ]
+    static let defaultTerms = ["dance", "dancing", "meme dance", "twerking"]
 
     let folder: URL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Pictures/Dancefloor", isDirectory: true)
