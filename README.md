@@ -16,6 +16,7 @@ Dancefloor lives in the menu bar (🕺, which shows the BPM once it locks on).
 - **Menu bar → Add Dancer** (⌘N): a random dancer from GIPHY and/or your folder.
 - **Search GIPHY…**: add a sticker matching a search term, e.g. "shrek".
 - **Randomise All** (⌘R): swap every dancer for a new one.
+- **Edit Random Search Terms…**: the GIPHY searches that Add Dancer and Randomise pick from.
 - **Drag** a dancer to move it, **scroll** over it to resize, **double-click** to swap it.
 - **Right-click** a dancer to set beats per loop, halve or double its speed, shift it by half
   a beat, keep a GIPHY dancer in your folder, or remove it. Tuning is remembered per GIF.

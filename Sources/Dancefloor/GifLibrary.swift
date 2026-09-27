@@ -51,7 +51,7 @@ final class GifLibrary {
         }
     }
 
-    static let randomTerms = [
+    static let defaultTerms = [
         "dancing", "dance", "twerk", "shrek dance", "dancing cat", "dancing dog", "dance party",
         "dancing animal", "breakdance", "dancing baby", "dancing frog", "dancing banana", "vibing",
     ]
@@ -69,6 +69,12 @@ final class GifLibrary {
     var giphyKey: String? {
         get { defaults.string(forKey: "giphyAPIKey").flatMap { $0.isEmpty ? nil : $0 } }
         set { defaults.set(newValue, forKey: "giphyAPIKey"); searchCache.removeAll() }
+    }
+
+    /// Search terms Randomise and Add Dancer pick from. Setting an empty list restores the defaults.
+    var randomTerms: [String] {
+        get { defaults.stringArray(forKey: "randomTerms").flatMap { $0.isEmpty ? nil : $0 } ?? Self.defaultTerms }
+        set { defaults.set(newValue.isEmpty ? nil : newValue, forKey: "randomTerms") }
     }
 
     var mode: SourceMode {
@@ -89,7 +95,7 @@ final class GifLibrary {
         let canLocal = !locals.isEmpty && mode != .giphy
 
         if canGiphy && (!canLocal || Bool.random()) {
-            return try await search(Self.randomTerms.randomElement()!, deep: true)
+            return try await search(randomTerms.randomElement() ?? "dancing", deep: true)
         }
         guard canLocal, let file = locals.randomElement() else { throw Failure.nothingToPick }
         return try loadLocal(.local(path: file.path), title: file.deletingPathExtension().lastPathComponent)

@@ -239,6 +239,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Dancer
         }
         source.submenu = sourceMenu
         menu.addItem(source)
+        menu.addItem(item("Edit Random Search Terms…", #selector(editRandomTerms)))
         menu.addItem(item(library.giphyKey == nil ? "Set GIPHY API Key…" : "Change GIPHY API Key…", #selector(promptForKey)))
         menu.addItem(item("Open My GIF Folder", #selector(openFolder)))
         menu.addItem(.separator())
@@ -278,6 +279,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Dancer
                                message: "Create a free app at developers.giphy.com and paste its API key here.",
                                placeholder: "API key", initial: library.giphyKey ?? "") else { return }
         library.giphyKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    @objc private func editRandomTerms() {
+        NSApp.activate()
+        let alert = NSAlert()
+        alert.messageText = "Random search terms"
+        alert.informativeText = "One per line. Add Dancer and Randomise pick one of these at random and search GIPHY for it. Clear everything to restore the defaults."
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+
+        let scroll = NSTextView.scrollableTextView()
+        scroll.frame = NSRect(x: 0, y: 0, width: 300, height: 220)
+        scroll.borderType = .bezelBorder
+        let text = scroll.documentView as! NSTextView
+        text.string = library.randomTerms.joined(separator: "\n")
+        text.font = .systemFont(ofSize: NSFont.systemFontSize)
+        text.isAutomaticQuoteSubstitutionEnabled = false
+        alert.accessoryView = scroll
+        alert.window.initialFirstResponder = text
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        library.randomTerms = text.string.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
     }
 
     // MARK: - Alerts
