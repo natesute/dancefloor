@@ -1,5 +1,8 @@
 import AppKit
 import DancefloorCore
+import os
+
+private let log = Logger(subsystem: "com.natesute.dancefloor", category: "library")
 
 /// Where a dancer's GIF came from, so it can be restored on relaunch.
 enum GifSource: Codable, Equatable {
@@ -42,7 +45,7 @@ final class GifLibrary {
         var errorDescription: String? {
             switch self {
             case .nothingToPick: "No GIFs available. Add some to your Dancefloor folder, or set a GIPHY API key."
-            case .noResults(let q): "GIPHY had no stickers for \"\(q)\"."
+            case .noResults(let q): "GIPHY had nothing for \"\(q)\"."
             case .unreadable: "That file isn't a readable GIF."
             }
         }
@@ -60,12 +63,7 @@ final class GifLibrary {
 
     init() {
         let fm = FileManager.default
-        if !fm.fileExists(atPath: folder.path) {
-            try? fm.createDirectory(at: folder, withIntermediateDirectories: true)
-            if let sample = Bundle.main.url(forResource: "sample-dancer", withExtension: "gif") {
-                try? fm.copyItem(at: sample, to: folder.appendingPathComponent("sample-dancer.gif"))
-            }
-        }
+        try? fm.createDirectory(at: folder, withIntermediateDirectories: true)
     }
 
     var giphyKey: String? {
@@ -97,19 +95,26 @@ final class GifLibrary {
         return try loadLocal(.local(path: file.path), title: file.deletingPathExtension().lastPathComponent)
     }
 
-    /// A random sticker from a GIPHY search. `deep` also looks past the first page.
+    /// A random sticker from a GIPHY search. `deep` sometimes looks past the first page for
+    /// variety. Falls back to the first page, then to regular GIFs, when a page is empty.
     func search(_ query: String, deep: Bool = false) async throws -> LoadedGif {
         guard let key = giphyKey else { throw Failure.nothingToPick }
         let client = GiphyClient(apiKey: key)
-        let offset = deep ? [0, 0, 50, 100].randomElement()! : 0
-        let cacheKey = "\(query.lowercased())#\(offset)"
-        var results = searchCache[cacheKey]
-        if results == nil {
-            results = try await client.searchStickers(query, offset: offset)
-            searchCache[cacheKey] = results
+        let attempts: [(GiphyClient.Kind, Int)] = (deep && Bool.random() ? [(.stickers, 50)] : [])
+            + [(.stickers, 0), (.gifs, 0)]
+        var pick: GiphyClient.Gif?
+        for (kind, offset) in attempts {
+            let cacheKey = "\(kind.rawValue):\(query.lowercased())#\(offset)"
+            var results = searchCache[cacheKey]
+            if results == nil {
+                results = try await client.search(query, kind: kind, offset: offset)
+                searchCache[cacheKey] = results
+            }
+            log.info("GIPHY \(kind.rawValue, privacy: .public) '\(query, privacy: .public)' offset \(offset): \(results?.count ?? 0) results")
+            pick = results?.filter { $0.downloadURL != nil }.randomElement()
+            if pick != nil { break }
         }
-        guard let pick = results?.filter({ $0.downloadURL != nil }).randomElement(),
-              let url = pick.downloadURL else { throw Failure.noResults(query) }
+        guard let pick, let url = pick.downloadURL else { throw Failure.noResults(query) }
         let data = try await client.download(url)
         guard let animation = GIFAnimation(data: data) else { throw Failure.unreadable }
         return LoadedGif(source: .giphy(id: pick.id, url: url.absoluteString),

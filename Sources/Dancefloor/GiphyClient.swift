@@ -35,9 +35,14 @@ struct GiphyClient {
 
     let apiKey: String
 
-    /// Searches GIPHY stickers, which have transparent backgrounds.
-    func searchStickers(_ query: String, offset: Int = 0, limit: Int = 50) async throws -> [Gif] {
-        var components = URLComponents(string: "https://api.giphy.com/v1/stickers/search")!
+    enum Kind: String {
+        /// Transparent backgrounds, so they float over the screen.
+        case stickers
+        case gifs
+    }
+
+    func search(_ query: String, kind: Kind = .stickers, offset: Int = 0, limit: Int = 50) async throws -> [Gif] {
+        var components = URLComponents(string: "https://api.giphy.com/v1/\(kind.rawValue)/search")!
         components.queryItems = [
             URLQueryItem(name: "api_key", value: apiKey),
             URLQueryItem(name: "q", value: query),

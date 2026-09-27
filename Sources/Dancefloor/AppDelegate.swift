@@ -202,6 +202,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Dancer
                 guard let gif = try? await library.load(s.source, title: s.title) else { continue }
                 addDancer(gif, height: s.height, center: NSPoint(x: s.x, y: s.y))
             }
+            if dancers.isEmpty { addRandomDancer() }
         }
     }
 
