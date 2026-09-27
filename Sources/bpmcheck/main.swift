@@ -35,6 +35,8 @@ let tracker = BeatTracker(sampleRate: sampleRate)
 let chunk = 512
 var i = 0
 var lastPrint = -10.0
+var firstDownbeat: Double?
+var barCalls: [String: Int] = [:]
 print(label)
 while i < samples.count {
     let n = min(chunk, samples.count - i)
@@ -44,7 +46,17 @@ while i < samples.count {
     }
     if t - lastPrint >= 2, let e = tracker.estimate {
         lastPrint = t
-        print(String(format: "t=%6.1fs  bpm=%6.2f  beat@%7.3fs  conf=%.2f", t, e.bpm, e.beatTime, e.confidence))
+        // Which beat of the bar (0-3, relative to the first downbeat seen) is called beat 1.
+        var bar = "-"
+        if let d = e.downbeatTime {
+            if firstDownbeat == nil { firstDownbeat = d }
+            let beats = ((d - firstDownbeat!) / e.period).rounded()
+            bar = String(Int(((beats.truncatingRemainder(dividingBy: 4)) + 4).truncatingRemainder(dividingBy: 4)))
+            barCalls[bar, default: 0] += 1
+        }
+        print(String(format: "t=%6.1fs  bpm=%6.2f  beat@%7.3fs  conf=%.2f  bar=%@ (%.2f)",
+                     t, e.bpm, e.beatTime, e.confidence, bar, e.downbeatConfidence))
     }
     i += n
 }
+print("bar calls:", barCalls.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " "))

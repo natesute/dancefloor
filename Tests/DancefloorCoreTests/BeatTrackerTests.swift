@@ -30,3 +30,22 @@ import Testing
         #expect(tracker.estimate == nil)
     }
 }
+
+@Suite struct DownbeatTests {
+    @Test(arguments: [100.0, 124, 140])
+    func findsBarStartsOnAccentedTrack(bpm: Double) {
+        let sr = 48_000.0
+        let start = 0.21
+        let audio = ClickTrack.make(bpm: bpm, seconds: 20, sampleRate: sr, startOffset: start, bars: true)
+        let tracker = BeatTracker(sampleRate: sr)
+        for i in stride(from: 0, to: audio.count, by: 512) {
+            _ = tracker.process(Array(audio[i..<min(i + 512, audio.count)]), time: Double(i) / sr)
+        }
+        let e = try! #require(tracker.estimate)
+        let downbeat = try! #require(e.downbeatTime)
+        let bar = 4 * 60 / bpm
+        let offset = (downbeat - start).truncatingRemainder(dividingBy: bar)
+        let err = min(abs(offset), abs(bar - abs(offset)))
+        #expect(err < 0.03, "downbeat off by \(err)s (confidence \(e.downbeatConfidence))")
+    }
+}

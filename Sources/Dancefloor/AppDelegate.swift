@@ -156,7 +156,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, Dan
     @objc private func tick() {
         let now = CACurrentMediaTime()
         let locked = clock.isLocked(at: now)
-        let beat = locked ? clock.beatPosition(at: now) : nil
+        let beat = locked ? clock.barBeatPosition(at: now) : nil
         let period = locked ? clock.period : nil
         for dancer in dancers { dancer.tick(beat: beat, period: period, now: now) }
     }

@@ -8,6 +8,18 @@ public struct BeatEstimate: Sendable, Equatable {
     public var beatTime: Double
     /// 0...1, how strongly periodic the recent audio is.
     public var confidence: Double
+    /// A time at which a bar starts (beat 1 of 4), when there's enough history to guess.
+    public var downbeatTime: Double?
+    /// How much more the chosen bar position stood out than the runner-up (0 = a coin toss).
+    public var downbeatConfidence: Double = 0
+
+    public init(bpm: Double, beatTime: Double, confidence: Double, downbeatTime: Double? = nil, downbeatConfidence: Double = 0) {
+        self.bpm = bpm
+        self.beatTime = beatTime
+        self.confidence = confidence
+        self.downbeatTime = downbeatTime
+        self.downbeatConfidence = downbeatConfidence
+    }
 
     public var period: Double { 60 / bpm }
 }
@@ -16,7 +28,9 @@ public struct BeatEstimate: Sendable, Equatable {
 ///
 /// Mono samples go in with a timestamp; every half second it re-estimates tempo from the
 /// autocorrelation of a spectral-flux onset envelope, then finds the beat phase by
-/// sliding a pulse train over the most recent onsets.
+/// sliding a pulse train over the most recent onsets. Bar starts come from comparing the four
+/// possible positions of beat 1 over the last few bars: downbeats tend to carry the strongest
+/// kick and the chord changes.
 public final class BeatTracker {
     public let sampleRate: Double
     public let minBPM: Double
@@ -34,6 +48,10 @@ public final class BeatTracker {
     private var onsets: [Float] = []
     private var lowOnsets: [Float] = []
     private var energies: [Float] = []
+    /// 12-bin pitch-class energy per frame, for spotting chord changes.
+    private var chroma: [[Float]] = []
+    private let pitchClassOfBin: [Int]
+    private let tempoFrames: Int
     private var lastFrameTime: Double = 0
     private let onsetCapacity: Int
     private var framesSinceAnalysis = 0
@@ -51,7 +69,16 @@ public final class BeatTracker {
         fft = vDSP.FFT(log2n: log2n, radix: .radix2, ofType: DSPSplitComplex.self)!
         window = vDSP.window(ofType: Float.self, usingSequence: .hanningDenormalized, count: fftSize, isHalfWindow: false)
         prevLogMag = [Float](repeating: 0, count: fftSize / 2)
-        onsetCapacity = Int(historySeconds * sampleRate / Double(hop))
+        tempoFrames = Int(historySeconds * sampleRate / Double(hop))
+        // Bar detection wants more bars of history than tempo does.
+        onsetCapacity = max(tempoFrames, Int(16 * sampleRate / Double(hop)))
+        let binHz = sampleRate / Double(fftSize)
+        pitchClassOfBin = (0..<fftSize / 2).map { i in
+            let f = Double(i) * binHz
+            guard f >= 110, f <= 3520 else { return -1 }
+            let semis = Int((12 * log2(f / 440)).rounded())
+            return ((semis % 12) + 12) % 12
+        }
     }
 
     /// Feed mono samples. `time` is the timestamp of `samples[0]`.
@@ -85,6 +112,7 @@ public final class BeatTracker {
         onsets.removeAll()
         lowOnsets.removeAll()
         energies.removeAll()
+        chroma.removeAll()
         estimate = nil
         prevLogMag = [Float](repeating: 0, count: fftSize / 2)
     }
@@ -124,14 +152,19 @@ public final class BeatTracker {
         }
         prevLogMag = logMag
 
+        var pitch = [Float](repeating: 0, count: 12)
+        for i in 1..<half where pitchClassOfBin[i] >= 0 { pitch[pitchClassOfBin[i]] += mags[i] * mags[i] }
+
         onsets.append(full / Float(half - 1))
         lowOnsets.append(low / Float(lowBins))
         energies.append(vDSP.rootMeanSquare(frame))
+        chroma.append(pitch)
         if onsets.count > onsetCapacity {
             let excess = onsets.count - onsetCapacity
             onsets.removeFirst(excess)
             lowOnsets.removeFirst(excess)
             energies.removeFirst(excess)
+            chroma.removeFirst(excess)
         }
         lastFrameTime = time
     }
@@ -139,14 +172,16 @@ public final class BeatTracker {
     // MARK: - Tempo and phase
 
     private func analyse() -> BeatEstimate? {
-        let n = onsets.count
         let fr = frameRate
 
         // Silence gate: nothing to dance to.
         let recentEnergy = energies.suffix(Int(fr * 2)).reduce(0, +) / Float(min(energies.count, Int(fr * 2)))
         if recentEnergy < 1e-4 { return nil }
 
-        let env = Self.highPass(onsets, smoothLen: max(3, Int(fr * 0.25)))
+        // Tempo and phase use the most recent `historySeconds`; bars use the full buffer.
+        let offset = max(0, onsets.count - tempoFrames)
+        let n = onsets.count - offset
+        let env = Self.highPass(Array(onsets[offset...]), smoothLen: max(3, Int(fr * 0.25)))
 
         // Autocorrelation over the lag range we care about (plus multiples for the comb).
         let maxLag = min(n - 1, Int(60 * fr / minBPM * 4) + 2)
@@ -197,7 +232,7 @@ public final class BeatTracker {
 
         // Phase: slide a decaying pulse train back from the newest frame, over a blend of
         // broadband and kick-band onsets (each scaled to unit peak).
-        let low = Self.highPass(lowOnsets, smoothLen: max(3, Int(fr * 0.25)))
+        let low = Self.highPass(Array(lowOnsets[offset...]), smoothLen: max(3, Int(fr * 0.25)))
         let envPeak = max(vDSP.maximum(env), 1e-9)
         let lowPeak = max(vDSP.maximum(low), 1e-9)
         let phaseEnv = zip(env, low).map { $0 / envPeak + lowBandWeight * $1 / lowPeak }
@@ -224,7 +259,67 @@ public final class BeatTracker {
         }
         let beatTime = lastFrameTime - bestPhase / fr
 
-        return BeatEstimate(bpm: bestBPM, beatTime: beatTime, confidence: confidence)
+        var result = BeatEstimate(bpm: bestBPM, beatTime: beatTime, confidence: confidence)
+        if let (barPhase, barConfidence) = findBarPhase(lastBeatFrame: Double(onsets.count - 1) - bestPhase, period: period) {
+            result.downbeatTime = beatTime - Double(barPhase) * 60 / bestBPM
+            result.downbeatConfidence = barConfidence
+        }
+        return result
+    }
+
+    /// Which of the last four beats started a bar, as beats back from the newest beat (0...3),
+    /// judged over every whole bar in the buffer. Frame indices here are into the full buffer.
+    private func findBarPhase(lastBeatFrame: Double, period: Double) -> (Int, Double)? {
+        let total = onsets.count
+        // Beat frames, newest first.
+        var beats: [Int] = []
+        var f = lastBeatFrame
+        while f - period >= 2 {
+            beats.append(Int(f.rounded()))
+            f -= period
+        }
+        guard beats.count >= 12 else { return nil } // three bars minimum
+
+        let low = Self.highPass(lowOnsets, smoothLen: max(3, Int(frameRate * 0.25)))
+
+        func meanChroma(_ from: Int, _ to: Int) -> [Float] {
+            var acc = [Float](repeating: 0, count: 12)
+            for i in max(0, from)..<min(total, max(from + 1, to)) { acc = vDSP.add(acc, chroma[i]) }
+            let norm = max(sqrt(vDSP.sumOfSquares(acc)), 1e-9)
+            return vDSP.divide(acc, norm)
+        }
+
+        // Features for beats with a full beat on each side.
+        var kick: [Float] = []
+        var change: [Float] = []
+        var index: [Int] = []
+        for k in 1..<(beats.count - 1) {
+            let b = beats[k]
+            let window = low[max(0, b - 2)...min(total - 1, b + 2)]
+            kick.append(window.max() ?? 0)
+            let before = meanChroma(beats[k + 1], b)
+            let after = meanChroma(b, beats[k - 1])
+            change.append(1 - vDSP.dot(before, after))
+            index.append(k)
+        }
+
+        func zscore(_ x: [Float]) -> [Float] {
+            let mean = vDSP.mean(x)
+            let centred = vDSP.add(-mean, x)
+            let sd = max(sqrt(vDSP.meanSquare(centred)), 1e-6)
+            return vDSP.divide(centred, sd)
+        }
+        let evidence = vDSP.add(zscore(kick), zscore(change))
+
+        var scores = [Double](repeating: 0, count: 4)
+        var counts = [Double](repeating: 0, count: 4)
+        for (e, k) in zip(evidence, index) {
+            scores[k % 4] += Double(e)
+            counts[k % 4] += 1
+        }
+        for m in 0..<4 { scores[m] /= max(counts[m], 1) }
+        let ranked = scores.enumerated().sorted { $0.element > $1.element }
+        return (ranked[0].offset, ranked[0].element - ranked[1].element)
     }
 
     /// Subtract a trailing local mean, half-wave rectify, then remove the overall mean.

@@ -36,7 +36,10 @@ GIPHY needs a free API key from developers.giphy.com (Menu → Set GIPHY API Key
 - `SystemAudioTap` captures system audio with a Core Audio process tap. Nothing is saved.
 - `BeatTracker` finds tempo from the autocorrelation of a spectral-flux onset envelope and
   beat phase from kick-weighted onsets. `BeatClock` smooths that into a continuous beat position.
-- Each dancer maps beat position to a frame so one GIF loop spans N beats.
+- Bar starts: each estimate scores the four possible positions of beat 1 by kick strength and
+  chord change (pitch-class shift) over the last 16 s; `BeatClock` takes a decaying vote so the
+  dancers only move bar 1 when one position clearly wins. Loops then start on a downbeat.
+- Each dancer maps bar position to a frame so one GIF loop spans N beats.
 
 ## Checking the beat tracker
 
