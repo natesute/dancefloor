@@ -2,7 +2,7 @@
 
 Dancing GIFs that float over your Mac and dance to the beat of whatever is playing.
 
-![Dancefloor icon](Resources/AppIcon.png)
+![Two dancers on a Mac desktop, moving in time with the music](docs/demo.gif)
 
 A menu bar app. It listens to your Mac's audio output (Spotify, YouTube, Apple Music, anything),
 works out the tempo and where the bars start, and times each GIF's loop so the dancers move on
